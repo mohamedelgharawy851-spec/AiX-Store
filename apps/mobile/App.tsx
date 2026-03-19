@@ -343,11 +343,6 @@ function BrandHero({
 }) {
   return (
     <View style={[styles.brandHero, compact && styles.brandHeroCompact]}>
-      <View style={styles.brandGlowBlue} />
-      <View style={styles.brandGlowPurple} />
-      <View style={styles.brandPill}>
-        <Text style={styles.brandPillText}>AIX STORE</Text>
-      </View>
       <Image resizeMode="contain" source={brandLogo} style={[styles.brandImage, compact && styles.brandImageCompact]} />
       <Text style={[styles.brandCaption, compact && styles.brandCaptionCompact]}>{caption}</Text>
     </View>
@@ -2592,70 +2587,32 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   brandHero: {
-    backgroundColor: "#2648D8",
-    borderColor: "#6A2BE9",
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderRadius: 32,
     borderWidth: 1,
     marginBottom: spacing.xs,
     overflow: "hidden",
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.lg,
-    position: "relative",
   },
   brandHeroCompact: {
     paddingVertical: spacing.md,
   },
-  brandGlowBlue: {
-    backgroundColor: "#57A3FF",
-    borderRadius: 999,
-    height: 220,
-    left: -70,
-    opacity: 0.26,
-    position: "absolute",
-    top: -60,
-    width: 220,
-  },
-  brandGlowPurple: {
-    backgroundColor: "#7C3AED",
-    borderRadius: 999,
-    bottom: -110,
-    height: 260,
-    opacity: 0.34,
-    position: "absolute",
-    right: -80,
-    width: 260,
-  },
-  brandPill: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(255,255,255,0.12)",
-    borderColor: "rgba(255,255,255,0.22)",
-    borderRadius: 999,
-    borderWidth: 1,
-    marginBottom: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-  },
-  brandPillText: {
-    color: colors.onPrimary,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.8,
-  },
   brandImage: {
     alignSelf: "center",
-    height: 190,
-    marginBottom: spacing.sm,
+    height: 124,
+    marginBottom: spacing.md,
     width: "100%",
   },
   brandImageCompact: {
-    height: 156,
+    height: 104,
     marginBottom: spacing.xs,
   },
   brandCaption: {
-    color: "#E7EEFF",
-    fontSize: 14,
-    lineHeight: 21,
-    maxWidth: 340,
+    color: colors.textMuted,
+    fontSize: 15,
+    lineHeight: 22,
   },
   brandCaptionCompact: {
     fontSize: 13,

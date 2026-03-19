@@ -1,6 +1,7 @@
 import { NativeModules } from "react-native";
 
 const DEFAULT_RUNTIME_PORT = 8787;
+const DEFAULT_PRODUCTION_RUNTIME_URL = "https://aix-store-production.up.railway.app";
 const runtimeOverride = (process.env.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL ?? "").trim();
 
 function extractMetroHost() {
@@ -12,6 +13,9 @@ function extractMetroHost() {
 export function runtimeBaseUrl() {
   if (runtimeOverride) {
     return runtimeOverride.replace(/\/+$/, "");
+  }
+  if (!__DEV__) {
+    return DEFAULT_PRODUCTION_RUNTIME_URL;
   }
   return `http://${extractMetroHost()}:${DEFAULT_RUNTIME_PORT}`;
 }
