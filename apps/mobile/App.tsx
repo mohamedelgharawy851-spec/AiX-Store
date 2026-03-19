@@ -76,6 +76,7 @@ const CATEGORY_FALLBACK_QUERIES: Record<string, string> = {
   sports: "dumbbells",
   others: "storage organizer",
 };
+const CATEGORY_PRIMARY_TIMEOUT_MS = 2500;
 
 const defaultEnrichmentState: EnrichmentState = {
   state: "idle",
@@ -113,6 +114,44 @@ function normalizeRuntimeAssetUrl(imageUrl: string | null | undefined) {
   return value;
 }
 
+function firstNonEmptyUrl(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const normalized = normalizeRuntimeAssetUrl(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function uniqueImageUrls(urls: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of urls) {
+    const normalized = normalizeRuntimeAssetUrl(value);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
 function fallbackCategoryQuery(categoryId: string | null) {
   if (!categoryId) {
     return "";
@@ -132,27 +171,26 @@ function imageGalleryForProduct(product: Product | ProductDetail | null | undefi
           : item,
       )
       .filter((item) => item?.url) ?? [];
-  if (gallery.length) {
-    return gallery;
-  }
-  if (!product?.imageUrl) {
+  const galleryUrls = uniqueImageUrls([product?.sourceImageUrl, ...gallery.map((item) => item.url), product?.imageUrl]);
+  if (!galleryUrls.length || !product) {
     return [];
   }
-  return [
-    {
-      id: `${product.id}:img:0`,
-      url: normalizeRuntimeAssetUrl(product.imageUrl),
-      altText: product.imageAltText,
-      variantLabel: product.variantLabel ?? null,
-    },
-  ] as ProductImageAsset[];
+  return galleryUrls.map((url, index) => {
+    const existing = gallery.find((item) => item.url === url);
+    return {
+      id: existing?.id || `${product.id}:img:${index}`,
+      url,
+      altText: existing?.altText || product.imageAltText,
+      variantLabel: existing?.variantLabel ?? product.variantLabel ?? null,
+    };
+  }) as ProductImageAsset[];
 }
 
 function productFromVariantSummary(
   baseProduct: Product,
   variant: ProductVariantSummary,
 ): Product {
-  const firstImage = normalizeRuntimeAssetUrl(variant.imageGallery[0]?.url || variant.imageUrl || baseProduct.imageUrl);
+  const firstImage = firstNonEmptyUrl(variant.imageGallery[0]?.url, variant.imageUrl, baseProduct.sourceImageUrl, baseProduct.imageUrl);
   return {
     ...baseProduct,
     id: variant.productId,
@@ -429,20 +467,23 @@ function SkeletonBlock({
 function ProductImage({
   imageAltText,
   imageUrl,
+  sourceImageUrl,
   style,
 }: {
   imageAltText: string;
   imageUrl: string;
+  sourceImageUrl?: string | null;
   style: any;
 }) {
-  const [failed, setFailed] = useState(false);
-  const resolvedImageUrl = normalizeRuntimeAssetUrl(imageUrl);
+  const candidateUrls = uniqueImageUrls([sourceImageUrl, imageUrl]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const resolvedImageUrl = candidateUrls[activeIndex] || "";
 
   useEffect(() => {
-    setFailed(false);
-  }, [resolvedImageUrl]);
+    setActiveIndex(0);
+  }, [candidateUrls.join("|")]);
 
-  if (!resolvedImageUrl || failed) {
+  if (!resolvedImageUrl) {
     return (
       <View style={[style, styles.imageFallback]}>
         <Ionicons color={colors.textMuted} name="image-outline" size={22} />
@@ -454,7 +495,13 @@ function ProductImage({
   return (
     <Image
       accessibilityLabel={imageAltText}
-      onError={() => setFailed(true)}
+      onError={() => {
+        if (activeIndex < candidateUrls.length - 1) {
+          setActiveIndex((current) => current + 1);
+          return;
+        }
+        setActiveIndex(candidateUrls.length);
+      }}
       resizeMode="cover"
       source={{ uri: resolvedImageUrl }}
       style={style}
@@ -488,7 +535,12 @@ function ProductCard({
           />
         </Pressable>
       ) : null}
-      <ProductImage imageAltText={product.imageAltText} imageUrl={product.imageUrl} style={styles.productImage} />
+      <ProductImage
+        imageAltText={product.imageAltText}
+        imageUrl={product.imageUrl}
+        sourceImageUrl={product.sourceImageUrl}
+        style={styles.productImage}
+      />
       <Text style={styles.productCategory}>{product.category}</Text>
       <Text numberOfLines={1} style={styles.productName}>
         {product.name}
@@ -669,7 +721,12 @@ function HomeScreen({
                   size={16}
                 />
               </Pressable>
-              <ProductImage imageAltText={product.imageAltText} imageUrl={product.imageUrl} style={styles.offerImage} />
+              <ProductImage
+                imageAltText={product.imageAltText}
+                imageUrl={product.imageUrl}
+                sourceImageUrl={product.sourceImageUrl}
+                style={styles.offerImage}
+              />
               <View style={styles.offerBody}>
                 {discount > 0 ? <Text style={styles.offerDiscount}>{discount}% OFF</Text> : null}
                 <Text numberOfLines={1} style={styles.offerTitle}>
@@ -1027,6 +1084,7 @@ function ProductDetailScreen({
                 <ProductImage
                   imageAltText={relatedProduct.imageAltText}
                   imageUrl={relatedProduct.imageUrl}
+                  sourceImageUrl={relatedProduct.sourceImageUrl}
                   style={styles.relatedImage}
                 />
                 <Text numberOfLines={1} style={styles.relatedTitle}>
@@ -1232,7 +1290,12 @@ function ProfileScreen({
                       size={16}
                     />
                   </Pressable>
-                  <ProductImage imageAltText={product.imageAltText} imageUrl={product.imageUrl} style={styles.relatedImage} />
+                  <ProductImage
+                    imageAltText={product.imageAltText}
+                    imageUrl={product.imageUrl}
+                    sourceImageUrl={product.sourceImageUrl}
+                    style={styles.relatedImage}
+                  />
                   <Text numberOfLines={1} style={styles.relatedTitle}>
                     {product.name}
                   </Text>
@@ -1890,22 +1953,28 @@ export default function App() {
     const controller = new AbortController();
     controllersRef.current[area] = controller;
 
+    const fallbackQuery = !normalizedQuery ? fallbackCategoryQuery(categoryId) : "";
+
     try {
-      const payload = normalizedQuery
-        ? await searchCatalog(normalizedQuery, {
+      const primaryRequest = normalizedQuery
+        ? searchCatalog(normalizedQuery, {
             categoryId,
             page,
             pageSize: catalogPageSize,
             token: sessionToken,
             signal: controller.signal,
           })
-        : await listCatalog({
+        : listCatalog({
             categoryId,
             page,
             pageSize: catalogPageSize,
             token: sessionToken,
             signal: controller.signal,
           });
+      const payload =
+        fallbackQuery && !append
+          ? await withTimeout(primaryRequest, CATEGORY_PRIMARY_TIMEOUT_MS, "Category request timed out")
+          : await primaryRequest;
 
       if (requestIdsRef.current[area] !== requestId) {
         return;
@@ -1951,7 +2020,6 @@ export default function App() {
       }
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "AbortError") {
-        const fallbackQuery = !normalizedQuery ? fallbackCategoryQuery(categoryId) : "";
         if (fallbackQuery) {
           try {
             const payload = await searchCatalog(fallbackQuery, {
@@ -2347,7 +2415,7 @@ export default function App() {
     setActiveCatalogContextKey(nextContextKey);
     const timeoutId = setTimeout(() => {
       void loadCatalogPage(normalizedQuery, selectedCategoryId, 1);
-    }, normalizedQuery ? 700 : 0);
+    }, normalizedQuery ? 350 : 0);
     return () => {
       clearTimeout(timeoutId);
     };
@@ -2693,12 +2761,12 @@ const styles = StyleSheet.create({
   },
   brandImage: {
     alignSelf: "center",
-    height: 124,
+    height: 96,
     marginBottom: spacing.md,
-    width: "100%",
+    width: "84%",
   },
   brandImageCompact: {
-    height: 104,
+    height: 78,
     marginBottom: spacing.xs,
   },
   brandCaption: {
