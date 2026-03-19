@@ -1,11 +1,13 @@
 # Scraper Runtime
 
-This service is now the live catalog runtime for ShopEase.
+This service is the live catalog runtime gateway for AIX Store.
 
 ## What it does
 
 - stores products in `data/catalog.json`
-- seeds roughly 100 real products on startup
+- proxies the mobile app to the FastAPI backend
+- decorates product payloads with runtime-served image URLs
+- seeds roughly 100 real products on startup when the backend catalog is empty
 - returns products, offers, categories, and product details over a lightweight local HTTP runtime
 - scrapes more products when a search misses the current catalog
 

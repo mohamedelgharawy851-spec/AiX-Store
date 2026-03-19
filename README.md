@@ -1,35 +1,79 @@
-# AIX Store
-AIX Store is a scraper-driven product discovery app with an Expo React Native mobile client, a local runtime layer, and a FastAPI backend backed by Supabase.
+# ShopEase
+
+ShopEase is a scraper-driven product discovery app with an Expo React Native mobile client, a local runtime layer, and a FastAPI backend backed by Supabase.
 
 ## What is in this repo
 
 - `apps/mobile`
-  - Expo React Native app for home, catalog, product detail, source redirects, and local cart state.
+  - Expo React Native client
+  - Owns navigation, product browsing, favorites, history UI, recommendations UI, and product detail presentation
 - `services/scraper`
-  - Local catalog runtime.
-  - Scrapes real product pages through web search, seeds the app on startup, and enriches searches on cache misses.
-  - Local cache files under `services/scraper/data/` are generated at runtime and are not committed.
+  - Node runtime gateway
+  - Proxies requests from the mobile app to FastAPI and decorates payloads for mobile-friendly image URLs
 - `services/scraper-python`
-  - FastAPI backend and scraper pipeline.
-  - Local files under `services/scraper-python/data/` are generated at runtime for fallback/caching only and are not committed.
-- `scripts/start-mobile-live.mjs`
-  - Starts the scraper runtime and Expo together so the mobile app loads live products immediately.
+  - FastAPI backend
+  - Owns catalog bootstrapping, category feeds, typed search, product detail, related products, favorites, history, recommendations, discovery, scraping, and persistence
+- `docs`
+  - architecture and integration notes
+- `scripts`
+  - shared startup and environment-loading utilities
+- `infra/searxng`
+  - self-hosted discovery reference configuration retained for the hybrid search pipeline
 
-## Current product flow
+## Current Runtime Model
 
-1. Start the mobile app.
-2. The local scraper runtime boots and seeds around 100 live products if the catalog is empty.
-3. The mobile app loads home, offers, catalog, product detail, images, and reviews from that runtime.
-4. If a user searches for something missing, the runtime scrapes more products for that query and stores only regenerated local cache files when needed.
-5. When the user opens a product, the app can redirect them to the original store page.
+The system runs as a layered stack:
 
-## Run
+1. The mobile app calls the local runtime on port `8787`.
+2. The runtime forwards requests to the Python API on port `8790`.
+3. The Python API executes catalog, search, scraping, recommendation, and auth logic.
+4. Persistent application data is stored in Supabase Postgres.
+5. Product scraping and enrichment are performed server-side through provider integrations and discovery services.
+
+The public app name is now **AIX Store**.
+
+Some internal identifiers still use the historical `ShopEase` prefix for compatibility, mainly in:
+
+- environment variable names
+- request headers such as `X-ShopEase-Session`
+- some script/helper names
+
+Those legacy identifiers are implementation details, not the product brand.
+
+## Main User Capabilities
+
+- browse category feeds
+- run typed product search
+- open detailed product pages
+- save favorites
+- view history
+- receive personalized recommendations
+- open the original seller/source page
+
+## Start the App
 
 ```bash
 /usr/bin/npm --workspace apps/mobile run android
 ```
 
-The workspace startup script now launches both:
+That startup path launches:
 
-- the local catalog runtime on port `8787`
+- the Node runtime
 - Expo for the mobile app
+
+## Operations
+
+Useful root scripts:
+
+- `npm run catalog:runtime`
+- `npm run catalog:reset`
+- `npm run catalog:audit-sqlite`
+- `npm run catalog:check-supabase`
+- `npm run catalog:migrate-supabase`
+- `npm run catalog:trigger-password-resets`
+
+## Notes for GitHub
+
+- Local runtime data under `services/scraper/data/` and `services/scraper-python/data/` is intentionally ignored and regenerated when needed.
+- `.env` remains local only and must not be committed.
+- The repository is prepared to be published without local product or user data.

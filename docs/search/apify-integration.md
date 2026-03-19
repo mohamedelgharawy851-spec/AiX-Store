@@ -1,17 +1,17 @@
 # Apify Discovery Integration
 
-ShopEase now uses Apify's managed Google Search Results Scraper as the live discovery provider for page-1 typed searches.
+AIX Store now uses Apify's managed Google Search Results Scraper as the live discovery provider for page-1 typed searches.
 
 ## Search flow
 
 1. Search starts with deterministic local variants.
-2. For discovery, ShopEase appends retailer-weighted Google queries such as `toy target`, `toy walmart`, and `toy amazon`.
-3. If cached accepted results are already strong, ShopEase returns them immediately.
-4. Otherwise, ShopEase sends the top variants to Apify's synchronous Google search actor.
+2. For discovery, AIX Store appends retailer-weighted Google queries such as `toy target`, `toy walmart`, and `toy amazon`.
+3. If cached accepted results are already strong, AIX Store returns them immediately.
+4. Otherwise, AIX Store sends the top variants to Apify's synchronous Google search actor.
 5. Only allowlisted retailer domains are kept.
 6. Result URLs are grouped by provider and extracted through the existing Target, Walmart, and Amazon parsers.
-7. Accepted products are stored in the existing SQLite catalog/query cache.
-8. If Apify is unavailable or produces nothing usable, ShopEase falls back to the direct-provider search path.
+7. Accepted products are stored in the existing catalog/query cache and persistent backend storage.
+8. If Apify is unavailable or produces nothing usable, AIX Store falls back to the direct-provider search path.
 
 ## Required environment
 

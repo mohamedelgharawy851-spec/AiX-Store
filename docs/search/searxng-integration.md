@@ -1,6 +1,6 @@
 # SearXNG Integration (Retired)
 
-SearXNG is no longer the live discovery provider for ShopEase search.
+SearXNG is no longer the live discovery provider for AIX Store search.
 
 The current runtime uses Apify's managed Google Search Results Scraper instead. See [Apify Discovery Integration](/home/shadymayez/ShopEase/docs/search/apify-integration.md).
 

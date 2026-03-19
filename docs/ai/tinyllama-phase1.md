@@ -1,6 +1,6 @@
 # TinyLlama Phase 1
 
-ShopEase phase 1 integrates `tinyllama:latest` through the local Ollama runtime as a backend-only search fallback and category judge.
+AIX Store phase 1 integrates `tinyllama:latest` through the local Ollama runtime as a backend-only search fallback and category judge.
 
 Scope:
 - prompt-only integration

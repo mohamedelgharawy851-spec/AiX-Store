@@ -1,6 +1,6 @@
 # SearXNG
 
-ShopEase uses SearXNG as a discovery layer for weak page-1 searches.
+AIX Store uses SearXNG as a discovery layer for weak page-1 searches.
 
 ## Start locally
 
@@ -17,12 +17,12 @@ http://127.0.0.1:8088
 
 ## Notes
 
-- ShopEase only accepts discovery results from supported shopping domains.
+- AIX Store only accepts discovery results from supported shopping domains.
 - Phase 1 allowlist:
   - `amazon.com`
   - `walmart.com`
   - `target.com`
-- If SearXNG is unavailable, ShopEase falls back to the existing direct-provider search path.
+- If SearXNG is unavailable, AIX Store falls back to the existing direct-provider search path.
 
 ## Engine keys
 
