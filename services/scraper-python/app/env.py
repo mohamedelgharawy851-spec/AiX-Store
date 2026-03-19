@@ -5,7 +5,13 @@ from pathlib import Path
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    current = Path(__file__).resolve()
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return current.parents[1]
+    for candidate in current.parents:
+        if (candidate / ".gitignore").is_file() or (candidate / "package.json").is_file():
+            return candidate
+    return current.parents[1]
 
 
 def _service_root() -> Path:

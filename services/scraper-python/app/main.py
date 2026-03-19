@@ -1,8 +1,22 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(dotenv_path=__file__ and __import__('pathlib').Path(__file__).parents[3] / '.env')
+
+
+def _dotenv_path() -> Path:
+    current = Path(__file__).resolve()
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return current.parents[1] / ".env"
+    for candidate in current.parents:
+        env_path = candidate / ".env"
+        if env_path.is_file():
+            return env_path
+    return current.parents[1] / ".env"
+
+
+load_dotenv(dotenv_path=_dotenv_path())
 
 from contextlib import asynccontextmanager
 

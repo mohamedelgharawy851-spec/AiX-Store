@@ -5,7 +5,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv as _ld
 
-_ld(Path(__file__).resolve().parents[4] / ".env")
+
+def _dotenv_path() -> Path:
+    current = Path(__file__).resolve()
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return current.parents[2] / ".env"
+    for candidate in current.parents:
+        env_path = candidate / ".env"
+        if env_path.is_file():
+            return env_path
+    return current.parents[2] / ".env"
+
+
+_ld(_dotenv_path())
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
