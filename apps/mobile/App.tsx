@@ -2763,7 +2763,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     height: 96,
     marginBottom: spacing.md,
-    width: "84%",
+    width: "92%",
   },
   brandImageCompact: {
     height: 78,
