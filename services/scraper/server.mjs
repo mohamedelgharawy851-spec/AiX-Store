@@ -8,9 +8,10 @@ import { RUNTIME_HOST, RUNTIME_PORT } from "./lib/config.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadAIXStoreEnv(path.resolve(__dirname, "../.."));
 
+const FASTAPI_URL = (process.env.AIXSTORE_FASTAPI_URL || "").trim().replace(/\/+$/, "");
 const PYTHON_HOST = process.env.AIXSTORE_PYTHON_HOST || "127.0.0.1";
 const PYTHON_PORT = Number(process.env.AIXSTORE_PYTHON_PORT || 8790);
-const PYTHON_BASE_URL = `http://${PYTHON_HOST}:${PYTHON_PORT}`;
+const PYTHON_BASE_URL = FASTAPI_URL || `http://${PYTHON_HOST}:${PYTHON_PORT}`;
 
 function corsHeaders(extra = {}) {
   return {

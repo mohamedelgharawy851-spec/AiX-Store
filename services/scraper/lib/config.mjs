@@ -1,4 +1,4 @@
-export const RUNTIME_PORT = Number(process.env.AIXSTORE_RUNTIME_PORT || 8787);
+export const RUNTIME_PORT = Number(process.env.PORT || process.env.AIXSTORE_RUNTIME_PORT || 8787);
 export const RUNTIME_HOST = process.env.AIXSTORE_RUNTIME_HOST || "0.0.0.0";
 
 export const CATEGORY_CONFIG = {

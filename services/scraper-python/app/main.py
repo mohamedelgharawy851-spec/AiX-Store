@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=__file__ and __import__('pathlib').Path(__file__).parents[3] / '.env')
 
@@ -34,6 +35,8 @@ from .storage.db import (
     remove_user_favorite,
 )
 from .storage.images import cache_image, prepare_image_cache_dir, resolve_image_path
+
+PORT = int(os.environ.get("PORT", 8000))
 
 
 @asynccontextmanager
