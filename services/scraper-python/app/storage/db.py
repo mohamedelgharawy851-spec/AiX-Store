@@ -151,6 +151,7 @@ def initialize_database() -> None:
             try:
                 connection.executescript(POSTGRES_SCHEMA_PATH.read_text("utf-8"))
             except Exception as exc:
+                connection.rollback()
                 logging.getLogger(__name__).warning(
                     "Schema init skipped (already exists or timeout): %s",
                     exc,

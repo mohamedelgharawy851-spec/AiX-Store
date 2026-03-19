@@ -2,7 +2,7 @@ import { NativeModules } from "react-native";
 
 const DEFAULT_RUNTIME_PORT = 8787;
 const DEFAULT_PRODUCTION_RUNTIME_URL = "https://aix-store-production.up.railway.app";
-const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
 const runtimeOverride = (process.env.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL ?? "").trim();
 
 function extractMetroHost() {
@@ -60,7 +60,7 @@ export async function fetchRuntimeJson(
     });
   } catch (error) {
     if (controller.signal.aborted && !options.signal?.aborted) {
-      throw new Error("Request timed out after 10 seconds. Try again in a moment.");
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds. Try again in a moment.`);
     }
     throw error;
   } finally {
