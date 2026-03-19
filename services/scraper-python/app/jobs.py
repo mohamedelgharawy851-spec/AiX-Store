@@ -86,6 +86,26 @@ from .utils import (
 )
 
 
+def _decode_json_value(value: Any, default: Any):
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return default
+
+
+def _decode_string_list(value: Any) -> list[str]:
+    decoded = _decode_json_value(value, [])
+    if not isinstance(decoded, list):
+        return []
+    return [normalize_whitespace(str(item)) for item in decoded if normalize_whitespace(str(item))]
+
+
 class CatalogJobRunner:
     def __init__(self) -> None:
         self._provider_map = {
@@ -265,9 +285,8 @@ class CatalogJobRunner:
 
     def _load_cursor(self, metadata: dict[str, Any] | None, variants: list[str]) -> dict[str, Any]:
         raw_cursor = metadata.get("next_page_token_json") if metadata else None
-        try:
-            parsed = json.loads(raw_cursor) if raw_cursor else {}
-        except Exception:
+        parsed = _decode_json_value(raw_cursor, {}) if raw_cursor else {}
+        if not isinstance(parsed, dict):
             parsed = {}
         parsed_variants = parsed.get("variants") or []
         current_terms = [normalize_whitespace(str(item.get("term"))).lower() for item in parsed_variants if item.get("term")]
@@ -885,7 +904,7 @@ class CatalogJobRunner:
     ) -> dict[str, Any]:
         metadata = get_query_metadata(context_key) or {}
         stored_variants = metadata.get("query_variants_json")
-        if page == 1 and stored_variants and json.loads(stored_variants or "[]") != variants:
+        if page == 1 and stored_variants and _decode_string_list(stored_variants) != variants:
             clear_query_results(context_key)
             metadata = {}
 
@@ -1465,7 +1484,7 @@ class CatalogJobRunner:
         variants = self._category_variants(category_id)
         metadata = get_query_metadata(context_key) or {}
         stored_variants = metadata.get("query_variants_json")
-        if stored_variants and json.loads(stored_variants or "[]") != variants:
+        if stored_variants and _decode_string_list(stored_variants) != variants:
             clear_query_results(context_key)
             metadata = {}
         cursor = self._load_cursor(metadata, variants)
@@ -1560,7 +1579,7 @@ class CatalogJobRunner:
         }
         metadata = get_query_metadata(context_key) or {}
         stored_variants = metadata.get("query_variants_json")
-        if stored_variants and json.loads(stored_variants or "[]") != provider_variants:
+        if stored_variants and _decode_string_list(stored_variants) != provider_variants:
             clear_query_results(context_key)
             metadata = {}
         payload = list_query_products(context_key, page=page, page_size=page_size, user_id=user_id)
@@ -1860,7 +1879,7 @@ class CatalogJobRunner:
         seed_queries = build_related_seed_queries(product, base_related.get("items", []))
         metadata = get_query_metadata(related_context_key) or {}
         stored_variants = metadata.get("query_variants_json")
-        if stored_variants and json.loads(stored_variants or "[]") != seed_queries:
+        if stored_variants and _decode_string_list(stored_variants) != seed_queries:
             clear_query_results(related_context_key)
             metadata = {}
         cursor = self._load_cursor(metadata, seed_queries)

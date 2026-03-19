@@ -36,7 +36,11 @@ function sendJson(response, statusCode, payload) {
 }
 
 function runtimeOrigin(request) {
-  return `http://${request.headers.host || `127.0.0.1:${RUNTIME_PORT}`}`;
+  const forwardedProto = Array.isArray(request.headers["x-forwarded-proto"])
+    ? request.headers["x-forwarded-proto"][0]
+    : request.headers["x-forwarded-proto"];
+  const protocol = (forwardedProto || "").split(",")[0].trim() || "http";
+  return `${protocol}://${request.headers.host || `127.0.0.1:${RUNTIME_PORT}`}`;
 }
 
 function decorateProduct(request, product) {

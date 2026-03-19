@@ -40,6 +40,7 @@ import { addFavorite, getFavorites, removeFavorite } from "./src/favorites/clien
 import type { FavoritesResponse } from "./src/favorites/client";
 import { getRecommendations } from "./src/recommendations/client";
 import type { RecommendationResponse } from "./src/recommendations/client";
+import { runtimeBaseUrl } from "./src/runtime/client";
 import { colors, spacing } from "./src/theme/tokens";
 
 type TabKey = "home" | "catalog" | "favorites" | "profile";
@@ -65,6 +66,16 @@ type CatalogContextState = {
 };
 
 const brandLogo = require("./assets/aix-store-brand.png");
+const CATEGORY_FALLBACK_QUERIES: Record<string, string> = {
+  electronics: "laptop",
+  food: "snacks",
+  fashion: "sneakers",
+  beauty: "skincare",
+  home: "air fryer",
+  toys: "lego",
+  sports: "dumbbells",
+  others: "storage organizer",
+};
 
 const defaultEnrichmentState: EnrichmentState = {
   state: "idle",
@@ -89,8 +100,38 @@ function uniqueProducts(products: Product[]) {
   });
 }
 
+function normalizeRuntimeAssetUrl(imageUrl: string | null | undefined) {
+  const value = (imageUrl || "").trim();
+  if (!value) {
+    return "";
+  }
+  const runtimeBase = runtimeBaseUrl().replace(/\/+$/, "");
+  const runtimeHttpBase = runtimeBase.replace(/^https:/, "http:");
+  if (value.startsWith(runtimeHttpBase)) {
+    return `${runtimeBase}${value.slice(runtimeHttpBase.length)}`;
+  }
+  return value;
+}
+
+function fallbackCategoryQuery(categoryId: string | null) {
+  if (!categoryId) {
+    return "";
+  }
+  return CATEGORY_FALLBACK_QUERIES[categoryId] || categoryId;
+}
+
 function imageGalleryForProduct(product: Product | ProductDetail | null | undefined) {
-  const gallery = product?.imageGallery?.filter((item) => item?.url) ?? [];
+  const gallery =
+    product?.imageGallery
+      ?.map((item) =>
+        item?.url
+          ? {
+              ...item,
+              url: normalizeRuntimeAssetUrl(item.url),
+            }
+          : item,
+      )
+      .filter((item) => item?.url) ?? [];
   if (gallery.length) {
     return gallery;
   }
@@ -100,7 +141,7 @@ function imageGalleryForProduct(product: Product | ProductDetail | null | undefi
   return [
     {
       id: `${product.id}:img:0`,
-      url: product.imageUrl,
+      url: normalizeRuntimeAssetUrl(product.imageUrl),
       altText: product.imageAltText,
       variantLabel: product.variantLabel ?? null,
     },
@@ -111,7 +152,7 @@ function productFromVariantSummary(
   baseProduct: Product,
   variant: ProductVariantSummary,
 ): Product {
-  const firstImage = variant.imageGallery[0]?.url || variant.imageUrl || baseProduct.imageUrl;
+  const firstImage = normalizeRuntimeAssetUrl(variant.imageGallery[0]?.url || variant.imageUrl || baseProduct.imageUrl);
   return {
     ...baseProduct,
     id: variant.productId,
@@ -395,12 +436,13 @@ function ProductImage({
   style: any;
 }) {
   const [failed, setFailed] = useState(false);
+  const resolvedImageUrl = normalizeRuntimeAssetUrl(imageUrl);
 
   useEffect(() => {
     setFailed(false);
-  }, [imageUrl]);
+  }, [resolvedImageUrl]);
 
-  if (!imageUrl || failed) {
+  if (!resolvedImageUrl || failed) {
     return (
       <View style={[style, styles.imageFallback]}>
         <Ionicons color={colors.textMuted} name="image-outline" size={22} />
@@ -414,7 +456,7 @@ function ProductImage({
       accessibilityLabel={imageAltText}
       onError={() => setFailed(true)}
       resizeMode="cover"
-      source={{ uri: imageUrl }}
+      source={{ uri: resolvedImageUrl }}
       style={style}
     />
   );
@@ -1909,6 +1951,56 @@ export default function App() {
       }
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "AbortError") {
+        const fallbackQuery = !normalizedQuery ? fallbackCategoryQuery(categoryId) : "";
+        if (fallbackQuery) {
+          try {
+            const payload = await searchCatalog(fallbackQuery, {
+              categoryId,
+              page,
+              pageSize: catalogPageSize,
+              token: sessionToken,
+              signal: controller.signal,
+            });
+            if (requestIdsRef.current[area] !== requestId) {
+              return;
+            }
+            catalogCacheRef.current.set(key, payload);
+            mergeFavoriteIds([...payload.items, ...payload.offers]);
+            setCategories(payload.categories);
+            const baseItems = append
+              ? collectCatalogItemsFromCache(
+                  catalogCacheRef.current,
+                  expectedContextKey,
+                  page,
+                  catalogContexts[expectedContextKey]?.items ?? [],
+                )
+              : [];
+            const nextCatalogItems = append ? uniqueProducts([...baseItems, ...payload.items]) : payload.items;
+            setOfferProducts(pickOfferProducts(payload.offers, nextCatalogItems));
+            setCatalogContextState(expectedContextKey, (current) => ({
+              ...current,
+              contextKey: expectedContextKey,
+              contextType: "category",
+              query: null,
+              categoryId,
+              items: nextCatalogItems,
+              page: payload.page,
+              hasMore: payload.hasMore,
+              loadingInitial: false,
+              loadingMore: false,
+              error: null,
+              enrichment: {
+                ...(payload.enrichment || defaultEnrichmentState),
+                state: "error",
+                message: `Using fallback ${fallbackQuery} results while the live category feed recovers.`,
+              },
+              loadedPages: append ? Array.from(new Set([...current.loadedPages, payload.page])) : [payload.page],
+            }));
+            return;
+          } catch {
+            // Fall through to the generic live request error below.
+          }
+        }
         setCatalogContextState(expectedContextKey, (current) => ({
           ...current,
           loadingInitial: false,
