@@ -21,6 +21,11 @@
         "foregroundImage": "./assets/aix-store-mark.png",
         "backgroundColor": "#F7FAFF"
       }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "964643ad-bd30-4a4f-81ed-4f19647ebc42"
+      }
     }
   }
 }
