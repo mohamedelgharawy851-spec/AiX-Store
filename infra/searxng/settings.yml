@@ -1,7 +1,7 @@
 use_default_settings: true
 
 general:
-  instance_name: "ShopEase SearXNG"
+  instance_name: "AIXStore SearXNG"
 
 server:
   limiter: false

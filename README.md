@@ -1,8 +1,21 @@
-# ShopEase
+# AIX Store
 
-ShopEase is a scraper-driven product discovery app with an Expo React Native mobile client, a local runtime layer, and a FastAPI backend backed by Supabase.
+AIX Store is a mobile-first product discovery platform built with Expo React Native, a lightweight Node runtime, and a FastAPI scraping and personalization backend backed by Supabase.
 
-## What is in this repo
+This repository contains the full application stack:
+
+- a branded mobile app
+- a local runtime gateway used by the app during development
+- a Python API that owns search, scraping, product enrichment, personalization, and storage
+- operational scripts for reset, reseed, migration, and Supabase maintenance
+
+## Project Review
+
+For the full professional project review, architecture walkthrough, and system evolution, see:
+
+- [Project Review](/home/shadymayez/ShopEase/docs/project-review.md)
+
+## Repository Structure
 
 - `apps/mobile`
   - Expo React Native client
@@ -30,15 +43,9 @@ The system runs as a layered stack:
 4. Persistent application data is stored in Supabase Postgres.
 5. Product scraping and enrichment are performed server-side through provider integrations and discovery services.
 
-The public app name is now **AIX Store**.
+The public app name is **AIXStore**.
 
-Some internal identifiers still use the historical `ShopEase` prefix for compatibility, mainly in:
-
-- environment variable names
-- request headers such as `X-ShopEase-Session`
-- some script/helper names
-
-Those legacy identifiers are implementation details, not the product brand.
+Core runtime and configuration identifiers use the `AIXSTORE_*` prefix and the `X-AIXStore-Session` request header.
 
 ## Main User Capabilities
 

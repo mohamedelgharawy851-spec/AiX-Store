@@ -36,7 +36,7 @@ Version: `category-judge.v1`
 
 Intent:
 - judge only ambiguous products after the rules classifier runs
-- choose from allowed ShopEase categories
+- choose from allowed AIXStore categories
 - return strict JSON
 
 Output contract:

@@ -57,10 +57,10 @@ export function searchCatalog(
   }).then((payload) => {
     const typedPayload = payload as CatalogListResponse;
     if (__DEV__ && typedPayload.ai) {
-      console.log("[AIX Store AI]", typedPayload.ai);
+      console.log("[AIXStore AI]", typedPayload.ai);
     }
     if (__DEV__ && typedPayload.discovery) {
-      console.log("[AIX Store Discovery]", typedPayload.discovery);
+      console.log("[AIXStore Discovery]", typedPayload.discovery);
     }
     return typedPayload;
   });

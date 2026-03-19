@@ -4,14 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
-import { loadShopEaseEnv } from "./load-env.mjs";
+import { loadAIXStoreEnv } from "./load-env.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-loadShopEaseEnv(rootDir);
+loadAIXStoreEnv(rootDir);
 const mode = process.argv[2] || "start";
-const runtimePort = Number(process.env.SHOPEASE_RUNTIME_PORT || 8787);
-const pythonPort = Number(process.env.SHOPEASE_PYTHON_PORT || 8790);
+const runtimePort = Number(process.env.AIXSTORE_RUNTIME_PORT || 8787);
+const pythonPort = Number(process.env.AIXSTORE_PYTHON_PORT || 8790);
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -146,7 +146,7 @@ async function ensureNodeRuntime() {
       stdio: "inherit",
       env: {
         ...process.env,
-        SHOPEASE_PYTHON_PORT: String(pythonPort),
+        AIXSTORE_PYTHON_PORT: String(pythonPort),
       },
     },
   );
@@ -177,13 +177,13 @@ async function main() {
   if (mode === "android") {
     const reverseEnabled = ensureAndroidReversePort();
     if (reverseEnabled) {
-      expoEnv.EXPO_PUBLIC_SHOPEASE_RUNTIME_URL = `http://127.0.0.1:${runtimePort}`;
+      expoEnv.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL = `http://127.0.0.1:${runtimePort}`;
     } else {
       const lanHost = resolveLanHost();
       if (lanHost) {
-        expoEnv.EXPO_PUBLIC_SHOPEASE_RUNTIME_URL = `http://${lanHost}:${runtimePort}`;
+        expoEnv.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL = `http://${lanHost}:${runtimePort}`;
         console.warn(
-          `Using LAN runtime URL ${expoEnv.EXPO_PUBLIC_SHOPEASE_RUNTIME_URL} because adb reverse is unavailable.`,
+          `Using LAN runtime URL ${expoEnv.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL} because adb reverse is unavailable.`,
         );
       } else {
         console.warn("adb reverse is unavailable and no LAN IPv4 address was found.");

@@ -1,6 +1,6 @@
 # TinyLlama Phase 1
 
-AIX Store phase 1 integrates `tinyllama:latest` through the local Ollama runtime as a backend-only search fallback and category judge.
+AIXStore phase 1 integrates `tinyllama:latest` through the local Ollama runtime as a backend-only search fallback and category judge.
 
 Scope:
 - prompt-only integration
@@ -19,17 +19,17 @@ Rollout modes:
 - `assist`: AI can add rewrite variants for weak searches and can override ambiguous category classification when confidence is high enough
 
 Environment variables:
-- `SHOPEASE_AI_ENABLED`
-- `SHOPEASE_AI_MODE`
-- `SHOPEASE_AI_MODEL`
-- `SHOPEASE_OLLAMA_BASE_URL`
-- `SHOPEASE_AI_MAX_NEW_TOKENS`
-- `SHOPEASE_AI_TEMPERATURE`
-- `SHOPEASE_AI_TOP_P`
-- `SHOPEASE_AI_TIMEOUT_MS`
-- `SHOPEASE_AI_COLD_START_TIMEOUT_MS`
-- `SHOPEASE_AI_REWRITE_LIMIT`
-- `SHOPEASE_AI_CACHE_TTL_SECONDS`
+- `AIXSTORE_AI_ENABLED`
+- `AIXSTORE_AI_MODE`
+- `AIXSTORE_AI_MODEL`
+- `AIXSTORE_OLLAMA_BASE_URL`
+- `AIXSTORE_AI_MAX_NEW_TOKENS`
+- `AIXSTORE_AI_TEMPERATURE`
+- `AIXSTORE_AI_TOP_P`
+- `AIXSTORE_AI_TIMEOUT_MS`
+- `AIXSTORE_AI_COLD_START_TIMEOUT_MS`
+- `AIXSTORE_AI_REWRITE_LIMIT`
+- `AIXSTORE_AI_CACHE_TTL_SECONDS`
 
 Debug endpoints:
 - `GET /ai/health`

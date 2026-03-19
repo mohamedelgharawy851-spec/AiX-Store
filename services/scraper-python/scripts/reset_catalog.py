@@ -21,8 +21,8 @@ def _health_ok(port: int) -> bool:
 
 
 def _warn_if_runtime_active() -> None:
-    python_port = int(os.environ.get("SHOPEASE_PYTHON_PORT", "8790"))
-    runtime_port = int(os.environ.get("SHOPEASE_RUNTIME_PORT", "8787"))
+    python_port = int(os.environ.get("AIXSTORE_PYTHON_PORT", "8790"))
+    runtime_port = int(os.environ.get("AIXSTORE_RUNTIME_PORT", "8787"))
     active_services: list[str] = []
     if _health_ok(python_port):
         active_services.append(f"python:{python_port}")
@@ -37,7 +37,7 @@ def _warn_if_runtime_active() -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Reset ShopEase product-linked state and optionally reseed the catalog.")
+    parser = argparse.ArgumentParser(description="Reset AIXStore product-linked state and optionally reseed the catalog.")
     parser.add_argument("--reseed", action="store_true", help="Rebuild the catalog after the reset.")
     parser.add_argument("--full-baseline", action="store_true", help="Run the full baseline reseed flow.")
     parser.add_argument("--per-category-target", type=int, default=24, help="Target minimum active products per category.")

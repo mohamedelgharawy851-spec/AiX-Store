@@ -571,7 +571,7 @@ function HomeScreen({
             <Ionicons color={colors.onPrimary} name="bag-handle" size={20} />
           </View>
           <View>
-            <Text style={styles.aixBrandTitle}>AIX Store</Text>
+            <Text style={styles.aixBrandTitle}>AIXStore</Text>
             <Text style={styles.aixBrandSubtitle}>Fresh picks across every aisle</Text>
           </View>
         </View>
@@ -1245,7 +1245,7 @@ function FavoritesScreen({
             <Ionicons color={colors.onPrimary} name="heart" size={18} />
           </View>
           <View>
-            <Text style={styles.aixBrandTitle}>AIX Store</Text>
+            <Text style={styles.aixBrandTitle}>AIXStore</Text>
             <Text style={styles.aixBrandSubtitle}>Your saved favorites</Text>
           </View>
         </View>
@@ -2416,7 +2416,7 @@ export default function App() {
   const renderContent = () => {
     if (authState === "loading") {
       return (
-        <ScreenShell header={<BrandHero caption="Restoring your AIX Store session." compact />}>
+        <ScreenShell header={<BrandHero caption="Restoring your AIXStore session." compact />}>
           <View style={styles.loadingCard}>
             <SkeletonBlock height={20} width="55%" />
             <SkeletonBlock height={16} width="82%" />

@@ -1,6 +1,6 @@
 import * as SecureStore from "expo-secure-store";
 
-const SESSION_TOKEN_KEY = "shopease.session.token";
+const SESSION_TOKEN_KEY = "aixstore.session.token";
 
 export function saveSessionToken(token: string) {
   return SecureStore.setItemAsync(SESSION_TOKEN_KEY, token);

@@ -1,6 +1,6 @@
 # Scraper Runtime
 
-This service is the live catalog runtime gateway for AIX Store.
+This service is the live catalog runtime gateway for AIXStore.
 
 ## What it does
 

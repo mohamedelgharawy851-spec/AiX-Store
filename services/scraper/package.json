@@ -1,5 +1,5 @@
 {
-  "name": "@shopease/scraper-runtime",
+  "name": "@aixstore/scraper-runtime",
   "private": true,
   "type": "module",
   "scripts": {

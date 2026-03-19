@@ -1,4 +1,4 @@
-# AIX Store Architecture
+# AIXStore Architecture
 
 ## Runtime Split
 
@@ -24,11 +24,11 @@
 
 ## System Direction
 
-AIX Store is designed as a product-discovery system rather than a checkout-first marketplace:
+AIXStore is designed as a product-discovery system rather than a checkout-first marketplace:
 
 - the mobile client stays focused on browsing and interaction
 - scraping and discovery stay server-side
 - personalization is driven by favorites, history, and backend ranking logic
 - storage is externalized through Supabase while the backend API contract remains stable
 
-For the full system walkthrough, see [Project Review](/home/shadymayez/ShopEase/docs/project-review.md).
+For the full system walkthrough, see [Project Review](docs/project-review.md).

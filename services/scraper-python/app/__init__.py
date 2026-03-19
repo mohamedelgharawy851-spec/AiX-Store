@@ -1,4 +1,4 @@
-"""ShopEase hybrid Python scraper service."""
+"""AIXStore hybrid Python scraper service."""
 
 from .env import LOADED_ENV_FILES as _LOADED_ENV_FILES
 

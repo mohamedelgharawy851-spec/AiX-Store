@@ -2,21 +2,21 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadShopEaseEnv } from "../../scripts/load-env.mjs";
+import { loadAIXStoreEnv } from "../../scripts/load-env.mjs";
 import { RUNTIME_HOST, RUNTIME_PORT } from "./lib/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-loadShopEaseEnv(path.resolve(__dirname, "../.."));
+loadAIXStoreEnv(path.resolve(__dirname, "../.."));
 
-const PYTHON_HOST = process.env.SHOPEASE_PYTHON_HOST || "127.0.0.1";
-const PYTHON_PORT = Number(process.env.SHOPEASE_PYTHON_PORT || 8790);
+const PYTHON_HOST = process.env.AIXSTORE_PYTHON_HOST || "127.0.0.1";
+const PYTHON_PORT = Number(process.env.AIXSTORE_PYTHON_PORT || 8790);
 const PYTHON_BASE_URL = `http://${PYTHON_HOST}:${PYTHON_PORT}`;
 
 function corsHeaders(extra = {}) {
   return {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "access-control-allow-headers": "Content-Type, Authorization, X-ShopEase-Session",
+    "access-control-allow-headers": "Content-Type, Authorization, X-AIXStore-Session",
     ...extra,
   };
 }
@@ -102,7 +102,7 @@ async function fetchUpstream(pathname, { search = "", method = "GET", body, auth
     headers.authorization = authorization;
   }
   if (sessionId) {
-    headers["x-shopease-session"] = sessionId;
+    headers["x-aixstore-session"] = sessionId;
   }
   if (body) {
     headers["content-type"] = "application/json; charset=utf-8";
@@ -121,7 +121,7 @@ async function proxyJson(request, response, pathname, decorate, search = "") {
     method: request.method || "GET",
     body: body && body.byteLength ? body : undefined,
     authorization: request.headers.authorization,
-    sessionId: request.headers["x-shopease-session"],
+    sessionId: request.headers["x-aixstore-session"],
   });
   const payload = await upstream.json();
   sendJson(response, upstream.status, decorate ? decorate(request, payload) : payload);
@@ -298,5 +298,5 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(RUNTIME_PORT, RUNTIME_HOST, () => {
-  console.log(`AIX Store catalog runtime listening on http://${RUNTIME_HOST}:${RUNTIME_PORT}`);
+  console.log(`AIXStore catalog runtime listening on http://${RUNTIME_HOST}:${RUNTIME_PORT}`);
 });

@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "AIX Store",
-    "slug": "shopease",
+    "name": "AIXStore",
+    "slug": "aixstore",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",

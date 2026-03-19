@@ -1,4 +1,4 @@
-# ShopEase Delivery Plan
+# AIXStore Delivery Plan
 
 ## Current Direction
 

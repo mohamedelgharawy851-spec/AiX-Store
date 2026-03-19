@@ -46,7 +46,7 @@ function parseEnvFile(filePath) {
   return entries;
 }
 
-export function loadShopEaseEnv(rootDir, env = process.env) {
+export function loadAIXStoreEnv(rootDir, env = process.env) {
   const candidates = [path.join(rootDir, ".env"), path.join(rootDir, ".env.local")];
   const loaded = new Map();
   const loadedFiles = [];

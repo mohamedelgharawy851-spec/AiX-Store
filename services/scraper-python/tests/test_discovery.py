@@ -168,7 +168,7 @@ class DiscoveryTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "SHOPEASE_APIFY_TOKEN": "",
+                "AIXSTORE_APIFY_TOKEN": "",
                 "APIFY_TOKEN": "alias-token",
             },
             clear=False,

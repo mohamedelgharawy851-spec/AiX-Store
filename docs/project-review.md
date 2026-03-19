@@ -1,8 +1,8 @@
-# AIX Store Project Review
+# AIXStore Project Review
 
 ## Executive Summary
 
-AIX Store is a hybrid commerce-discovery system. It is not a checkout-first marketplace and it is not a thin UI over static catalog data. Its core value is product discovery: finding real products from live retail sources, normalizing them into a unified catalog, enriching them with images and detail data, and presenting them through a mobile experience shaped by favorites, history, and recommendations.
+AIXStore is a hybrid commerce-discovery system. It is not a checkout-first marketplace and it is not a thin UI over static catalog data. Its core value is product discovery: finding real products from live retail sources, normalizing them into a unified catalog, enriching them with images and detail data, and presenting them through a mobile experience shaped by favorites, history, and recommendations.
 
 The current stack is composed of three cooperating layers:
 
@@ -10,11 +10,11 @@ The current stack is composed of three cooperating layers:
 - a lightweight Node runtime gateway
 - a FastAPI backend responsible for data, scraping, personalization, and storage
 
-Persistent application data is now backed by Supabase Postgres. Scraping and discovery remain server-side. The app brand has been updated to **AIX Store**.
+Persistent application data is now backed by Supabase Postgres. Scraping and discovery remain server-side. The app brand has been updated to **AIXStore**.
 
 ## What This Project Is
 
-At a product level, AIX Store is a discovery engine that lets a user:
+At a product level, AIXStore is a discovery engine that lets a user:
 
 - browse curated category feeds
 - search for products using typed queries
@@ -28,15 +28,13 @@ At a systems level, it is a pipeline that converts live web product signals into
 
 ## Current Brand and Naming
 
-The public-facing product name is now **AIX Store**.
+The public-facing product name is **AIXStore**.
 
-The repository still contains some historical `ShopEase` identifiers in implementation details, including:
+The technical configuration model follows the same brand direction, including:
 
-- environment variable prefixes such as `SHOPEASE_*`
-- compatibility headers such as `X-ShopEase-Session`
-- older helper and script names
-
-Those are technical legacy names. The user-facing application identity is AIX Store, as reflected in the mobile app branding and public documentation.
+- environment variable prefixes such as `AIXSTORE_*`
+- compatibility headers such as `X-AIXStore-Session`
+- package names and runtime identifiers aligned to `aixstore`
 
 ## Repository Walkthrough
 
@@ -153,7 +151,7 @@ The system prefers graceful degradation. If live enrichment fails, the stored pr
 
 ### Home
 
-Home is the first branded experience and now reflects AIX Store rather than the previous ShopEase identity. It functions as a personalized discovery surface rather than a plain category menu.
+Home is the first branded experience and reflects AIXStore as a personalized discovery surface rather than a plain category menu.
 
 Its key responsibilities are:
 
@@ -369,10 +367,10 @@ This is the correct use of AI in this architecture. Core catalog correctness sti
 
 The repository shows an obvious evolution:
 
-- an earlier ShopEase-branded concept
-- a stronger AIX Store visual direction
+- an earlier prototype identity
+- a stronger AIXStore visual direction
 - Stitch design sources for key surfaces
-- newer mobile assets and splash branding aligned to AIX Store
+- newer mobile assets and splash branding aligned to AIXStore
 
 This is visible in:
 
@@ -392,11 +390,11 @@ From the repository itself, the project evolution is clear:
 4. Search became hybrid, combining managed discovery with secondary expansion.
 5. Personalization became more deliberate, especially through favorites-first recommendations.
 6. Persistence moved from local-only SQLite into Supabase-backed Postgres.
-7. The public brand moved from ShopEase to AIX Store.
+7. The public brand was consolidated under AIXStore.
 
 That sequence is important because it explains the current shape of the code:
 
-- some legacy names still exist
+- some legacy structural artifacts still exist
 - the architecture is layered instead of fully rewritten from scratch
 - the project has both prototype-era artifacts and production-oriented improvements
 
@@ -412,7 +410,7 @@ That sequence is important because it explains the current shape of the code:
 
 ## Areas That Still Carry Legacy Weight
 
-- Historical `ShopEase` identifiers remain in internal names
+- Some early-iteration artifacts still remain in the repository structure
 - The repository still contains prototype and design artifact folders that are not runtime-critical
 - The Node runtime exists mainly as a compatibility/development gateway rather than a deeply featured application server
 - Some documentation previously described an older local-data model and needed branding cleanup
@@ -421,7 +419,7 @@ These are not structural failures, but they are the visible marks of a project t
 
 ## Final Assessment
 
-AIX Store is no longer just a mobile UI or a simple scraper. It is a layered product-discovery platform with:
+AIXStore is no longer just a mobile UI or a simple scraper. It is a layered product-discovery platform with:
 
 - a branded client
 - a stable local runtime gateway
@@ -440,4 +438,4 @@ Its strongest product decision is that it treats favorites and behavior as first
 
 Its clearest architectural story is this:
 
-**AIX Store discovers live products, turns them into a normalized catalog, and delivers them through a mobile experience that becomes smarter as the user interacts with it.**
+**AIXStore discovers live products, turns them into a normalized catalog, and delivers them through a mobile experience that becomes smarter as the user interacts with it.**

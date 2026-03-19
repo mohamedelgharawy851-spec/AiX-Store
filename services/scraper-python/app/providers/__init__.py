@@ -1,1 +1,1 @@
-"""Provider implementations for the ShopEase scraper."""
+"""Provider implementations for the AIXStore scraper."""

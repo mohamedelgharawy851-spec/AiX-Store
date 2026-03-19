@@ -202,14 +202,14 @@ async def ai_judge_category(payload: dict):
 async def catalog_product_detail(
     product_id: str,
     authorization: str | None = Header(default=None),
-    x_shopease_session: str | None = Header(default=None, alias="X-ShopEase-Session"),
+    x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
     auth_context = get_auth_context_by_token(_extract_token(authorization) or "", touch=False)
     user_id = str(auth_context["user_id"]) if auth_context else None
     payload = await job_runner.get_detail(
         product_id,
         user_id=user_id,
-        session_id=_effective_session_id(x_shopease_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, auth_context),
     )
     if not payload:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -222,7 +222,7 @@ async def catalog_product_related(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, alias="pageSize", ge=1, le=100),
     authorization: str | None = Header(default=None),
-    x_shopease_session: str | None = Header(default=None, alias="X-ShopEase-Session"),
+    x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
     auth_context = get_auth_context_by_token(_extract_token(authorization) or "", touch=False)
     user_id = str(auth_context["user_id"]) if auth_context else None
@@ -231,7 +231,7 @@ async def catalog_product_related(
         page=page,
         page_size=page_size,
         user_id=user_id,
-        session_id=_effective_session_id(x_shopease_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, auth_context),
     )
     if not payload:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -281,14 +281,14 @@ async def me_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, alias="pageSize", ge=1, le=100),
     authorization: str | None = Header(default=None),
-    x_shopease_session: str | None = Header(default=None, alias="X-ShopEase-Session"),
+    x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
     auth_context = _require_auth_context(authorization)
     return list_user_history(
         auth_context["user_id"],
         page=page,
         page_size=page_size,
-        session_id=_effective_session_id(x_shopease_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, auth_context),
     )
 
 
@@ -322,14 +322,14 @@ async def me_recommendations(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, alias="pageSize", ge=1, le=100),
     authorization: str | None = Header(default=None),
-    x_shopease_session: str | None = Header(default=None, alias="X-ShopEase-Session"),
+    x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
     auth_context = _require_auth_context(authorization)
     return list_user_recommendations(
         auth_context["user_id"],
         page=page,
         page_size=page_size,
-        session_id=_effective_session_id(x_shopease_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, auth_context),
     )
 
 
@@ -337,7 +337,7 @@ async def me_recommendations(
 async def me_events(
     payload: dict,
     authorization: str | None = Header(default=None),
-    x_shopease_session: str | None = Header(default=None, alias="X-ShopEase-Session"),
+    x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
     auth_context = _require_auth_context(authorization)
     event_type = str(payload.get("type", "")).strip()
@@ -351,7 +351,7 @@ async def me_events(
         query_text=payload.get("queryText"),
         source_url=payload.get("sourceUrl"),
         metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
-        session_id=_effective_session_id(x_shopease_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, auth_context),
     )
     return {"ok": True}
 

@@ -1,7 +1,7 @@
 import { NativeModules } from "react-native";
 
 const DEFAULT_RUNTIME_PORT = 8787;
-const runtimeOverride = (process.env.EXPO_PUBLIC_SHOPEASE_RUNTIME_URL ?? "").trim();
+const runtimeOverride = (process.env.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL ?? "").trim();
 
 function extractMetroHost() {
   const scriptURL = NativeModules.SourceCode?.scriptURL ?? "";
@@ -33,7 +33,7 @@ export async function fetchRuntimeJson(
     headers.Authorization = `Bearer ${options.token}`;
   }
   if (options.sessionId) {
-    headers["X-ShopEase-Session"] = options.sessionId;
+    headers["X-AIXStore-Session"] = options.sessionId;
   }
 
   const response = await fetch(`${runtimeBaseUrl()}${path}`, {
