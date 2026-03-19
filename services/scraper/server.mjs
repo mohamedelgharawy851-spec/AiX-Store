@@ -2,11 +2,14 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadAIXStoreEnv } from "../../scripts/load-env.mjs";
 import { RUNTIME_HOST, RUNTIME_PORT } from "./lib/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-loadAIXStoreEnv(path.resolve(__dirname, "../.."));
+
+if (!process.env.RAILWAY_ENVIRONMENT) {
+  const { loadAIXStoreEnv } = await import("../../scripts/load-env.mjs");
+  loadAIXStoreEnv(path.resolve(__dirname, "../.."));
+}
 
 const FASTAPI_URL = (process.env.AIXSTORE_FASTAPI_URL || "").trim().replace(/\/+$/, "");
 const PYTHON_HOST = process.env.AIXSTORE_PYTHON_HOST || "127.0.0.1";
