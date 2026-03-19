@@ -1,6 +1,5 @@
-# ShopEase
-
-ShopEase is a scraper-driven product discovery app with an Expo React Native mobile client, a local runtime layer, and a FastAPI backend backed by Supabase.
+# AIX Store
+AIX Store is a scraper-driven product discovery app with an Expo React Native mobile client, a local runtime layer, and a FastAPI backend backed by Supabase.
 
 ## What is in this repo
 
