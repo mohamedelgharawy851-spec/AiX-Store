@@ -6,7 +6,7 @@ from pathlib import Path
 
 def _repo_root() -> Path:
     current = Path(__file__).resolve()
-    if os.environ.get("RAILWAY_ENVIRONMENT"):
+    if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("SPACE_ID"):
         return current.parents[1]
     for candidate in current.parents:
         if (candidate / ".gitignore").is_file() or (candidate / "package.json").is_file():
