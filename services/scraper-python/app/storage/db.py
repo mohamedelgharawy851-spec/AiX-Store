@@ -2409,11 +2409,25 @@ def authenticate_user(email: str, password: str) -> dict[str, Any]:
                 query={"grant_type": "password"},
             )
         except httpx.HTTPStatusError as exc:
+            logging.getLogger(__name__).warning(
+                "Supabase login failed for %s with status %s: %s",
+                normalized_email,
+                exc.response.status_code if exc.response is not None else "unknown",
+                (exc.response.text if exc.response is not None else str(exc))[:500],
+            )
             raise ValueError("Invalid email or password.") from exc
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Unexpected login failure for %s", normalized_email)
+            raise ValueError("Login failed. Try again in a moment.") from exc
         payload = response.json() or {}
         access_token = str(payload.get("access_token") or "").strip()
         user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
         if not access_token or not user_payload:
+            logging.getLogger(__name__).warning(
+                "Supabase login returned incomplete payload for %s: keys=%s",
+                normalized_email,
+                sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
             raise ValueError("Invalid email or password.")
         with get_connection() as connection:
             _upsert_profile_for_supabase_user(connection, user_payload)

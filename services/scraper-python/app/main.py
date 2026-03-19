@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -61,6 +62,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)
+logger = logging.getLogger(__name__)
 
 
 def _extract_token(authorization: str | None) -> str | None:
@@ -265,14 +267,19 @@ async def auth_signup(payload: dict):
 
 @app.post("/auth/login")
 async def auth_login(payload: dict):
+    email = str(payload.get("email", "")).strip().lower()
     try:
-        result = authenticate_user(str(payload.get("email", "")), str(payload.get("password", "")))
+        result = authenticate_user(email, str(payload.get("password", "")))
         user_id = get_user_id_by_token(result["token"])
         if user_id:
             record_user_event(user_id, "login")
         return result
     except ValueError as exc:
+        logger.warning("Login rejected for %s: %s", email, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Login crashed for %s", email)
+        raise HTTPException(status_code=500, detail="Login failed. Try again in a moment.") from exc
 
 
 @app.post("/auth/logout")

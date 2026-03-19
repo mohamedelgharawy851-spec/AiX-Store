@@ -1,11 +1,14 @@
 import { fetchRuntimeJson } from "../runtime/client";
 import type { AuthResponse, MeResponse } from "./types";
 
+const AUTH_REQUEST_TIMEOUT_MS = 120000;
+
 export function signUp(email: string, password: string, signal?: AbortSignal) {
   return fetchRuntimeJson("/auth/signup", {
     method: "POST",
     body: { email, password },
     signal,
+    timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
   }) as Promise<AuthResponse>;
 }
 
@@ -14,6 +17,7 @@ export function signIn(email: string, password: string, signal?: AbortSignal) {
     method: "POST",
     body: { email, password },
     signal,
+    timeoutMs: AUTH_REQUEST_TIMEOUT_MS,
   }) as Promise<AuthResponse>;
 }
 
