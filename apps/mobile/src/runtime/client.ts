@@ -2,6 +2,7 @@ import { NativeModules } from "react-native";
 
 const DEFAULT_RUNTIME_PORT = 8787;
 const DEFAULT_PRODUCTION_RUNTIME_URL = "https://aix-store-production.up.railway.app";
+const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
 const runtimeOverride = (process.env.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL ?? "").trim();
 
 function extractMetroHost() {
@@ -28,6 +29,7 @@ export async function fetchRuntimeJson(
     token?: string | null;
     sessionId?: string | null;
     signal?: AbortSignal;
+    timeoutMs?: number;
   } = {},
 ) {
   const headers: Record<string, string> = {
@@ -40,12 +42,31 @@ export async function fetchRuntimeJson(
     headers["X-AIXStore-Session"] = options.sessionId;
   }
 
-  const response = await fetch(`${runtimeBaseUrl()}${path}`, {
-    method: options.method || "GET",
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    signal: options.signal,
-  });
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  const abortListener = () => controller.abort();
+  options.signal?.addEventListener("abort", abortListener);
+
+  let response: Response;
+  try {
+    response = await fetch(`${runtimeBaseUrl()}${path}`, {
+      method: options.method || "GET",
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted && !options.signal?.aborted) {
+      throw new Error("Request timed out after 10 seconds. Try again in a moment.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    options.signal?.removeEventListener("abort", abortListener);
+  }
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
