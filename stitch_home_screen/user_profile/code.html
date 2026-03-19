@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              colors: {
+                "primary": "#3884ff",
+                "background-light": "#f5f6f8",
+                "background-dark": "#0f1723",
+              },
+              fontFamily: {
+                "display": ["Inter"]
+              },
+              borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+            },
+          },
+        }
+    </script>
+<title>User Profile</title>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .hide-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+<div class="relative flex min-h-screen w-full flex-col bg-background-light dark:bg-background-dark overflow-x-hidden pb-20">
+<!-- Header -->
+<div class="flex items-center bg-white dark:bg-slate-900 p-4 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
+<div class="flex size-10 shrink-0 items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer">
+<span class="material-symbols-outlined">arrow_back</span>
+</div>
+<h2 class="text-lg font-bold flex-1 text-center">Profile</h2>
+<div class="flex size-10 items-center justify-end">
+<button class="flex items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 p-2">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</div>
+<!-- Hero Profile Section -->
+<div class="flex p-6 @container">
+<div class="flex w-full flex-col gap-4 items-center">
+<div class="flex gap-4 flex-col items-center">
+<div class="relative">
+<div class="bg-center bg-no-repeat aspect-square bg-cover rounded-full min-h-32 w-32 border-4 border-white dark:border-slate-800 shadow-lg" data-alt="Professional headshot of a smiling man with short hair" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAYtJxZ-6pj3yHI2u2-ONP09zUBZDmOY-hF5TJBNrS5WEb_y5JUqYzXHNJoP__EImeLH3911ES1dMA3sGXDgTV8q6bgIfpyvrtrhchFuLQ1wcfacz736PmGHqcB_ncRDwQV0qTT8xI5Xlwu6qzFLo2RqhC1LbiA1L9hZu7r7z_oh2Ash99SUXbKDQSSRZyejrxVkK3ZoHIhCrNlGHpUL9r1zwftl3hIfpCMDC3pKhzCB3sWamovUY7CYPtBbAQX9yTT3zkWa1MlZHP0");'>
+</div>
+<div class="absolute bottom-1 right-1 bg-primary text-white p-1.5 rounded-full border-2 border-white dark:border-slate-800">
+<span class="material-symbols-outlined text-sm">edit</span>
+</div>
+</div>
+<div class="flex flex-col items-center justify-center">
+<p class="text-[24px] font-bold tracking-tight">Alex Johnson</p>
+<p class="text-slate-500 dark:text-slate-400 text-base">alex.j@example.com</p>
+</div>
+</div>
+<button class="flex min-w-[140px] cursor-pointer items-center justify-center rounded-xl h-10 px-6 bg-primary/10 text-primary text-sm font-bold hover:bg-primary/20 transition-colors">
+<span>Edit Profile</span>
+</button>
+</div>
+</div>
+<!-- Personal Information Section -->
+<div class="px-4 space-y-1">
+<h3 class="text-slate-500 dark:text-slate-400 text-xs font-bold uppercase tracking-wider px-2 py-2">Personal Information</h3>
+<div class="bg-white dark:bg-slate-900 rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="flex items-center gap-4 px-4 min-h-[64px] py-2 border-b border-slate-100 dark:border-slate-800 last:border-0 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50">
+<div class="flex items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0 size-10">
+<span class="material-symbols-outlined">person</span>
+</div>
+<div class="flex flex-col flex-1">
+<p class="text-xs text-slate-400 font-medium">Full Name</p>
+<p class="text-sm font-semibold">Alex Johnson</p>
+</div>
+<span class="material-symbols-outlined text-slate-300">chevron_right</span>
+</div>
+<div class="flex items-center gap-4 px-4 min-h-[64px] py-2 border-b border-slate-100 dark:border-slate-800 last:border-0 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50">
+<div class="flex items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0 size-10">
+<span class="material-symbols-outlined">phone</span>
+</div>
+<div class="flex flex-col flex-1">
+<p class="text-xs text-slate-400 font-medium">Phone Number</p>
+<p class="text-sm font-semibold">+1 (555) 0123-4567</p>
+</div>
+<span class="material-symbols-outlined text-slate-300">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Favorite Products Section -->
+<div class="px-4 mt-6 space-y-1">
+<div class="flex justify-between items-center px-2 py-2">
+<h3 class="text-slate-500 dark:text-slate-400 text-xs font-bold uppercase tracking-wider">Favorite Products</h3>
+<button class="text-xs font-bold text-primary">View All</button>
+</div>
+<div class="flex gap-4 overflow-x-auto pb-2 hide-scrollbar">
+<!-- Product 1 -->
+<div class="flex-none w-32 bg-white dark:bg-slate-900 rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="aspect-square w-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center relative">
+<img alt="Headphones" class="object-cover w-full h-full" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBiWKhDqfs-nVxEKaSGjP181vuckuOusLOgAvkNP5li-t-6zcMWlZtHCJoP_uoFk_Sy9FSNogJoB3q18b223R9ghLXQwnlsZJBIAXINJBNhdaEWC9ZDhYDIWZu5fbujeJuv4JUH2MFt9pkLpkS8b_dQVM74zlgy2TQlaZoniNTzGjfoN9I7p8K4mN_NDVNXDyOa-iqj1L02bguk21a5d8o5Y5DcDBpQrRXWnlN-jTxmH0UwXsfcWvDb35myWI_5bn56Ff-WuNySn3dB"/>
+<button class="absolute top-1 right-1 size-6 bg-white/90 dark:bg-slate-900/90 rounded-full flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-red-500 text-sm" style="font-variation-settings: 'FILL' 1">favorite</span>
+</button>
+</div>
+<div class="p-2">
+<p class="text-[11px] font-semibold truncate">Wireless Pro</p>
+<p class="text-xs font-bold text-primary">$199</p>
+</div>
+</div>
+<!-- Product 2 -->
+<div class="flex-none w-32 bg-white dark:bg-slate-900 rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="aspect-square w-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center relative">
+<img alt="Watch" class="object-cover w-full h-full" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA3isWobiNMIsUT8CuCGtlptiGI08l0kca6YaYBQbg0it9x2Cf4FZKwxx1pOJlyVtIFjpibI_OXsn8srgLqhiEluSQLU0Ox81XPEkPTUK4lNxoVUwqYt-uY83glw_E67Mmg6k-g7k9MpcOCuunM9qcGxckccTt5ymqz9jUE3DcFlqLUGf5uPxEptVh8i3SDP3O4HFjjb3VDgonigK3hItFJvjDxwFY_senOBTBVUYREAf2cmJwL_VujQO1zwrrM-7SpLSwtmcPPUM-F"/>
+<button class="absolute top-1 right-1 size-6 bg-white/90 dark:bg-slate-900/90 rounded-full flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-red-500 text-sm" style="font-variation-settings: 'FILL' 1">favorite</span>
+</button>
+</div>
+<div class="p-2">
+<p class="text-[11px] font-semibold truncate">Smart Series X</p>
+<p class="text-xs font-bold text-primary">$299</p>
+</div>
+</div>
+<!-- Product 3 -->
+<div class="flex-none w-32 bg-white dark:bg-slate-900 rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="aspect-square w-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center relative">
+<img alt="Running Shoes" class="object-cover w-full h-full" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCwLpsGkU-gTOAsYBr17vO69y152pzkFtBnu9uGkeNwMVYhZCSW5hmKp93Zbjon9ddkbFdDcQ5oJcx-LMCcsZN-eLALJ7l8g59_pZPbw4PxdQ255XRJKL8IoiCoWMbK-KN-0jtgwPoa5v8IoWSARxMSWy-CvRCYzZ8UKvbbaok5BidDGGFa3UuvqeKSoUuSeME5RO8RZd6gRJ8NCn9GYxFpphoyL15kTW8weOsT_FfH1fvDpLs_AhYOPrPG4Z6D0bqlLQG3w54Lt_NE"/>
+<button class="absolute top-1 right-1 size-6 bg-white/90 dark:bg-slate-900/90 rounded-full flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-red-500 text-sm" style="font-variation-settings: 'FILL' 1">favorite</span>
+</button>
+</div>
+<div class="p-2">
+<p class="text-[11px] font-semibold truncate">Swift Runners</p>
+<p class="text-xs font-bold text-primary">$85</p>
+</div>
+</div>
+<!-- Product 4 -->
+<div class="flex-none w-32 bg-white dark:bg-slate-900 rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="aspect-square w-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center relative">
+<img alt="Sunglasses" class="object-cover w-full h-full" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCv-dOhDnojV90NMnhYRfWQaDRggY3mjY0phW-P5fRr0hGIeF4utb_XawHS5woITMX4CQ1Nk3eUlltz6e2LyjCyd2UDamfbgLwaBSBZybyN6-dm9JV6F_-Ql_iKSSO-ZW01reYq48i9FHk5nR46ALWJK_nNadq4qX72g5_KLPhbGwCUwe2Ri3Wb3hWVuauV0WfbrNpDPoX3pTVndAgigZmaKeF6qYvqPDMNMtlN9cCLy6QPSLjScCqDK2K2fnddWHHW7D0pXAYSwmhA"/>
+<button class="absolute top-1 right-1 size-6 bg-white/90 dark:bg-slate-900/90 rounded-full flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-red-500 text-sm" style="font-variation-settings: 'FILL' 1">favorite</span>
+</button>
+</div>
+<div class="p-2">
+<p class="text-[11px] font-semibold truncate">Urban Aviators</p>
+<p class="text-xs font-bold text-primary">$120</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Preferences Panel -->
+<div class="px-4 mt-6 space-y-1">
+<h3 class="text-slate-500 dark:text-slate-400 text-xs font-bold uppercase tracking-wider px-2 py-2">Interest Preferences</h3>
+<div class="bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800">
+<div class="flex flex-wrap gap-2">
+<button class="flex items-center gap-2 px-3 py-1.5 bg-primary text-white rounded-full text-sm font-medium">
+<span class="material-symbols-outlined text-base">devices</span> Tech
+                    </button>
+<button class="flex items-center gap-2 px-3 py-1.5 bg-primary text-white rounded-full text-sm font-medium">
+<span class="material-symbols-outlined text-base">landscape</span> Outdoor
+                    </button>
+<button class="flex items-center gap-2 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm font-medium hover:bg-primary/10 hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-base">checkroom</span> Style
+                    </button>
+<button class="flex items-center gap-2 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm font-medium hover:bg-primary/10 hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-base">fitness_center</span> Fitness
+                    </button>
+<button class="flex items-center gap-2 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm font-medium hover:bg-primary/10 hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-base">menu_book</span> Reading
+                    </button>
+<button class="flex items-center gap-1.5 px-3 py-1.5 border border-dashed border-slate-300 dark:border-slate-600 text-slate-400 rounded-full text-sm font-medium">
+<span class="material-symbols-outlined text-base">add</span> More
+                    </button>
+</div>
+</div>
+</div>
+<!-- Order History Section -->
+<div class="px-4 mt-6 space-y-1">
+<div class="flex justify-between items-center px-2 py-2">
+<h3 class="text-slate-500 dark:text-slate-400 text-xs font-bold uppercase tracking-wider">Recent Orders</h3>
+<button class="text-xs font-bold text-primary">View All</button>
+</div>
+<div class="bg-white dark:bg-slate-900 rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+<!-- Order Item 1 -->
+<div class="flex items-center gap-4 px-4 py-3 border-b border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50">
+<div class="size-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-slate-500">shopping_bag</span>
+</div>
+<div class="flex flex-col flex-1">
+<p class="text-sm font-semibold">Order #88219</p>
+<p class="text-xs text-slate-500 dark:text-slate-400">Mar 12, 2024 • 3 items</p>
+</div>
+<div class="text-right">
+<p class="text-sm font-bold">$124.50</p>
+<p class="text-[10px] text-green-500 font-bold uppercase">Delivered</p>
+</div>
+</div>
+<!-- Order Item 2 -->
+<div class="flex items-center gap-4 px-4 py-3 border-b border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50">
+<div class="size-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-slate-500">shopping_bag</span>
+</div>
+<div class="flex flex-col flex-1">
+<p class="text-sm font-semibold">Order #88104</p>
+<p class="text-xs text-slate-500 dark:text-slate-400">Feb 28, 2024 • 1 item</p>
+</div>
+<div class="text-right">
+<p class="text-sm font-bold">$45.00</p>
+<p class="text-[10px] text-primary font-bold uppercase">Shipped</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Bottom Navigation Bar -->
+<div class="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 px-4 pb-4 pt-2 flex items-center justify-around z-20">
+<a class="flex flex-col items-center gap-1 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">home</span>
+<p class="text-[10px] font-medium uppercase tracking-tight">Home</p>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">search</span>
+<p class="text-[10px] font-medium uppercase tracking-tight">Search</p>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">shopping_cart</span>
+<p class="text-[10px] font-medium uppercase tracking-tight">Cart</p>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">favorite</span>
+<p class="text-[10px] font-medium uppercase tracking-tight">Favorites</p>
+</a>
+<a class="flex flex-col items-center gap-1 text-primary" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1">person</span>
+<p class="text-[10px] font-medium uppercase tracking-tight">Profile</p>
+</a>
+</div>
+</div>
+</body></html>

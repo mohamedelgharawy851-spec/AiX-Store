@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "AIX Store",
+    "slug": "shopease",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/aix-store-icon.png",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "splash": {
+      "image": "./assets/aix-store-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F7FAFF"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/aix-store-mark.png",
+        "backgroundColor": "#F7FAFF"
+      }
+    }
+  }
+}

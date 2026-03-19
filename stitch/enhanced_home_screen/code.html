@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#3884ff",
+                        "secondary": "#FFA500",
+                        "background-light": "#f8fafc",
+                        "background-dark": "#0f172a",
+                    },
+                    fontFamily: {
+                        "sans": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.5rem",
+                        "lg": "0.75rem",
+                        "xl": "1rem",
+                        "2xl": "1.25rem",
+                        "full": "9999px"
+                    },
+                    boxShadow: {
+                        "soft": "0 4px 20px -2px rgba(0, 0, 0, 0.05)",
+                        "premium": "0 10px 30px -5px rgba(0, 0, 0, 0.08)",
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .glass-effect { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen pb-24">
+<!-- Header Section -->
+<header class="sticky top-0 z-50 bg-background-light/80 dark:bg-background-dark/80 glass-effect px-5 pt-5 pb-3">
+<div class="flex items-center justify-between mb-5">
+<div class="flex items-center gap-2.5">
+<div class="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-lg shadow-primary/20">
+<span class="material-symbols-outlined text-white text-2xl">shopping_bag</span>
+</div>
+<h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">ShopEase</h1>
+</div>
+<div class="flex gap-2">
+<button class="relative w-10 h-10 flex items-center justify-center rounded-full bg-white dark:bg-slate-800 shadow-soft">
+<span class="material-symbols-outlined text-slate-600 dark:text-slate-300">notifications</span>
+<span class="absolute top-2.5 right-2.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white dark:border-slate-800"></span>
+</button>
+<button class="w-10 h-10 flex items-center justify-center rounded-full bg-white dark:bg-slate-800 shadow-soft">
+<span class="material-symbols-outlined text-slate-600 dark:text-slate-300">shopping_cart</span>
+</button>
+</div>
+</div>
+<!-- Search Bar -->
+<div class="relative group">
+<div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-slate-400 group-focus-within:text-primary transition-colors">search</span>
+</div>
+<input class="block w-full pl-11 pr-4 py-3.5 border-none bg-white dark:bg-slate-800 rounded-2xl focus:ring-2 focus:ring-primary/50 shadow-soft text-sm placeholder:text-slate-400" placeholder="Search brands, products, styles..." type="text"/>
+</div>
+</header>
+<!-- Categories Section -->
+<section class="px-5 py-6 overflow-x-auto no-scrollbar">
+<div class="flex gap-7 min-w-max">
+<div class="flex flex-col items-center gap-2.5">
+<div class="w-16 h-16 rounded-2xl bg-white dark:bg-slate-800 shadow-soft flex items-center justify-center text-primary hover:scale-105 transition-transform">
+<span class="material-symbols-outlined text-2xl">devices</span>
+</div>
+<span class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">Electronics</span>
+</div>
+<div class="flex flex-col items-center gap-2.5">
+<div class="w-16 h-16 rounded-2xl bg-white dark:bg-slate-800 shadow-soft flex items-center justify-center text-secondary hover:scale-105 transition-transform">
+<span class="material-symbols-outlined text-2xl">apparel</span>
+</div>
+<span class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">Fashion</span>
+</div>
+<div class="flex flex-col items-center gap-2.5">
+<div class="w-16 h-16 rounded-2xl bg-white dark:bg-slate-800 shadow-soft flex items-center justify-center text-pink-500 hover:scale-105 transition-transform">
+<span class="material-symbols-outlined text-2xl">face_6</span>
+</div>
+<span class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">Beauty</span>
+</div>
+<div class="flex flex-col items-center gap-2.5">
+<div class="w-16 h-16 rounded-2xl bg-white dark:bg-slate-800 shadow-soft flex items-center justify-center text-emerald-500 hover:scale-105 transition-transform">
+<span class="material-symbols-outlined text-2xl">home</span>
+</div>
+<span class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">Home</span>
+</div>
+<div class="flex flex-col items-center gap-2.5">
+<div class="w-16 h-16 rounded-2xl bg-white dark:bg-slate-800 shadow-soft flex items-center justify-center text-purple-500 hover:scale-105 transition-transform">
+<span class="material-symbols-outlined text-2xl">toys</span>
+</div>
+<span class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">Toys</span>
+</div>
+<div class="flex flex-col items-center gap-2.5">
+<div class="w-16 h-16 rounded-2xl bg-white dark:bg-slate-800 shadow-soft flex items-center justify-center text-slate-400 hover:scale-105 transition-transform">
+<span class="material-symbols-outlined text-2xl">grid_view</span>
+</div>
+<span class="text-[11px] font-semibold text-slate-600 dark:text-slate-400">More</span>
+</div>
+</div>
+</section>
+<!-- Hero Promo Section -->
+<section class="px-5 mb-10">
+<div class="relative w-full aspect-[21/10] rounded-3xl overflow-hidden shadow-premium bg-gradient-to-br from-primary via-blue-500 to-indigo-600">
+<div class="absolute inset-0 bg-black/5"></div>
+<div class="relative h-full flex flex-col justify-center p-7 text-white z-10">
+<span class="bg-white/20 backdrop-blur-md text-[10px] font-bold px-2.5 py-1 rounded-full w-fit mb-3 border border-white/20 tracking-wider">LIMITED TIME OFFER</span>
+<h2 class="text-2xl font-extrabold mb-1 leading-tight">Mega Summer Sale</h2>
+<p class="text-sm font-medium text-white/80 mb-5">Up to 60% off on all electronics</p>
+<button class="bg-white text-primary px-5 py-2.5 rounded-xl font-bold text-sm w-fit shadow-lg active:scale-95 transition-transform">Shop Now</button>
+</div>
+<div class="absolute right-0 bottom-0 top-0 w-[45%] bg-cover bg-center mix-blend-overlay opacity-80" data-alt="Modern wireless over-ear headphones in lifestyle shot" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuD-9qlcrMUupj7bu7o6KYyU2VsJnnan9C_cB2orbtLy38tdqoxbBwJMo-aaCzMdaFJvhWwHW_8YLFh6u2h0YFcPuXhGkKnlyQ0V7Bb-uIGUtZa3cxvEeSzICbW9nYRX8b8pvLSTgiJaPTIW4gAM7NdVXJ6cc-RKoK4-rH5zTZ9fq1s4HOK2z_ZAl9ZThRp8sVNf8AF_4UhWlRWUNVEWXvLl5_EIG5MflxF2AOgb-8feTojDW-qWduGzIrPeYA1PApNpYh-PvnbZLdku')">
+</div>
+</div>
+<!-- Indicator dots -->
+<div class="flex justify-center gap-2 mt-4">
+<div class="w-8 h-1.5 rounded-full bg-primary/40">
+<div class="w-4 h-full bg-primary rounded-full"></div>
+</div>
+<div class="w-1.5 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+<div class="w-1.5 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+</div>
+</section>
+<!-- Recommended Section -->
+<section class="px-5 mb-8">
+<div class="flex items-center justify-between mb-5">
+<h3 class="text-lg font-bold text-slate-900 dark:text-slate-100">Recommended for you</h3>
+<a class="text-xs font-bold text-primary uppercase tracking-wider bg-primary/5 px-3 py-1.5 rounded-lg" href="#">View All</a>
+</div>
+<div class="grid grid-cols-2 gap-5">
+<!-- Product 1 -->
+<div class="bg-white dark:bg-slate-800 rounded-3xl p-3.5 shadow-soft border border-slate-100 dark:border-slate-700/50 flex flex-col group">
+<div class="relative aspect-[4/5] rounded-2xl bg-slate-50 dark:bg-slate-900 overflow-hidden mb-4">
+<div class="absolute top-2.5 right-2.5 z-10">
+<button class="w-8 h-8 rounded-full bg-white/90 dark:bg-slate-800/90 glass-effect text-slate-400 hover:text-red-500 flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-[18px]">favorite</span>
+</button>
+</div>
+<img class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" data-alt="Red stylish athletic sneakers on clean background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDrsTZV52qTvTF257qzD28XbpwPlBGqFe4NDWnjQXXfkPOnZgoEiM0EKvPSpwqSHrz4GQtbFM70IivaBuO0MBUvAQWjY5cdarw1UDNwSBo10rR-b2EqOHP20lhM_K_Du1q1pxrC6n1LCcN_Jhudxmvgqv2oe5Wo2wfWgatZU-CWl50Ac6YPQAPgrpYYE7ja9j8hQ0l0xVvrsly3JoWhQ6g7X87ZcVgAxzpYYVuTQU7OUvUzdIEV6_mnKXD6xifUQNxILzB78MWJZzx7"/>
+</div>
+<div class="flex flex-col flex-grow">
+<p class="text-[9px] text-slate-400 uppercase font-extrabold tracking-widest mb-1.5">Footwear</p>
+<h4 class="text-sm font-bold text-slate-800 dark:text-slate-100 line-clamp-1 mb-3">Sonic Speed Sneakers</h4>
+<div class="mt-auto flex items-center justify-between">
+<span class="text-base font-extrabold text-slate-900 dark:text-slate-100">$89.00</span>
+<div class="flex items-center gap-0.5 text-[11px] font-bold text-slate-900 dark:text-slate-100">
+<span class="material-symbols-outlined text-[14px] text-secondary fill-1">star</span>
+                        4.8
+                    </div>
+</div>
+</div>
+</div>
+<!-- Product 2 -->
+<div class="bg-white dark:bg-slate-800 rounded-3xl p-3.5 shadow-soft border border-slate-100 dark:border-slate-700/50 flex flex-col group">
+<div class="relative aspect-[4/5] rounded-2xl bg-slate-50 dark:bg-slate-900 overflow-hidden mb-4">
+<div class="absolute top-2.5 right-2.5 z-10">
+<button class="w-8 h-8 rounded-full bg-white/90 dark:bg-slate-800/90 glass-effect text-red-500 flex items-center justify-center shadow-sm">
+<span class="material-symbols-outlined text-[18px] fill-1">favorite</span>
+</button>
+</div>
+<img class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" data-alt="Premium glass jar of luxury facial cream" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB8nMALBKj7JVlKGzG6jMTfeXAgT5fOu7RhCjr6LEe57JQ90u4_ClRhG5BNdFQhkAPi70QBct_ka-PbiDncifcUgF2QWzv4upOpgLWxFtzpZBBP1qicdOuI0qgOhBB-xBcnh-0v6bjYNqQBLnL9Q_Ondby14askm7_b1n1u4_PwQPEEO4CGz1-nA1dczWcoTIZUuEaKYUZ_Q129cQ1R9xpfFyh_PTEE9WV6nCndonp0iQ36PMutC-RLuYxVuf_F9sabXOjL_JNAyGXT"/>
+</div>
+<div class="flex flex-col flex-grow">
+<p class="text-[9px] text-slate-400 uppercase font-extrabold tracking-widest mb-1.5">Skincare</p>
+<h4 class="text-sm font-bold text-slate-800 dark:text-slate-100 line-clamp-1 mb-3">Hydra-Glow Moisturizer</h4>
+<div class="mt-auto flex items-center justify-between">
+<span class="text-base font-extrabold text-slate-900 dark:text-slate-100">$45.00</span>
+<div class="flex items-center gap-0.5 text-[11px] font-bold text-slate-900 dark:text-slate-100">
+<span class="material-symbols-outlined text-[14px] text-secondary fill-1">star</span>
+                        4.9
+                    </div>
+</div>
+</div>
+</div>
+<!-- Product 3 -->
+<div class="bg-white dark:bg-slate-800 rounded-3xl p-3.5 shadow-soft border border-slate-100 dark:border-slate-700/50 flex flex-col group">
+<div class="relative aspect-[4/5] rounded-2xl bg-slate-50 dark:bg-slate-900 overflow-hidden mb-4">
+<img class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" data-alt="Minimalist white smart watch with rubber strap" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB-fFRg9PzFAfEzXn2w26KTBsq0RD1OsC2GhTThVezKo_65Ue5VR3trKTZ9i6p6qGBxnqtrZ54nU93KvNmB4HY8QRpo-CbPbWImjzKJDnjd2rsR2OxDmqvmb_LDx5pVCxXU56VIfQ9x-HJBW8GRi1a0TdgSOGUVHeBptu20-7uNfidrnq8OPBwv3dXYxYheOpiK-bqdwVtzW5gSuiqlTHRYK70TMi8gxwFZ9tn7kj39giru6VD-TxKBPEFibexsjhHMFDLbbzjEc6d8"/>
+</div>
+<div class="flex flex-col flex-grow">
+<p class="text-[9px] text-slate-400 uppercase font-extrabold tracking-widest mb-1.5">Electronics</p>
+<h4 class="text-sm font-bold text-slate-800 dark:text-slate-100 line-clamp-1 mb-3">Series 7 Smartwatch</h4>
+<div class="mt-auto flex items-center justify-between">
+<span class="text-base font-extrabold text-slate-900 dark:text-slate-100">$299.00</span>
+<div class="flex items-center gap-0.5 text-[11px] font-bold text-slate-900 dark:text-slate-100">
+<span class="material-symbols-outlined text-[14px] text-secondary fill-1">star</span>
+                        4.7
+                    </div>
+</div>
+</div>
+</div>
+<!-- Product 4 -->
+<div class="bg-white dark:bg-slate-800 rounded-3xl p-3.5 shadow-soft border border-slate-100 dark:border-slate-700/50 flex flex-col group">
+<div class="relative aspect-[4/5] rounded-2xl bg-slate-50 dark:bg-slate-900 overflow-hidden mb-4">
+<span class="absolute top-2.5 left-2.5 bg-primary text-white text-[9px] font-extrabold px-2 py-0.5 rounded-md z-10 shadow-lg shadow-primary/20 tracking-wider uppercase">BESTSELLER</span>
+<img class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" data-alt="Over-ear noise cancelling headphones in black" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBplsa3SJUAvIKHLrX6-PGQl9JFDUR9kTL6dRgac4NEs3ZbdsFRFRjznY1no8_46IzRxQwX-Qip3_WmHiZmpol9ballcJW8xTNETwCZUVc_-fTKSsJ7LNUyQG9kOSj-h2W7j4JHXHcsTJF9e9Gllc6x6MT5rsopQXKQwL7WtMlPKbl7AXeoKuBZZcNYomGAfs8KhmvUjR8qMsaGlykVA8nYEnEigTTntqQKWCy-QT5MblRWD0cpy4bffs67VmcJ4P8kwbfQtxR-w1BT"/>
+</div>
+<div class="flex flex-col flex-grow">
+<p class="text-[9px] text-slate-400 uppercase font-extrabold tracking-widest mb-1.5">Audio</p>
+<h4 class="text-sm font-bold text-slate-800 dark:text-slate-100 line-clamp-1 mb-3">Noise-X Headphones</h4>
+<div class="mt-auto flex items-center justify-between">
+<span class="text-base font-extrabold text-slate-900 dark:text-slate-100">$189.00</span>
+<div class="flex items-center gap-0.5 text-[11px] font-bold text-slate-900 dark:text-slate-100">
+<span class="material-symbols-outlined text-[14px] text-secondary fill-1">star</span>
+                        5.0
+                    </div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-slate-900/90 glass-effect border-t border-slate-100 dark:border-slate-800 px-6 pb-6 pt-3 flex items-center justify-around z-20 shadow-[0_-4px_20px_-4px_rgba(0,0,0,0.05)]">
+<a class="flex flex-col items-center gap-1.5 text-primary" href="#">
+<span class="material-symbols-outlined text-[26px]" style="font-variation-settings: 'FILL' 1">home</span>
+<p class="text-[9px] font-extrabold uppercase tracking-widest">Home</p>
+</a>
+<a class="flex flex-col items-center gap-1.5 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined text-[26px]">search</span>
+<p class="text-[9px] font-extrabold uppercase tracking-widest">Search</p>
+</a>
+<a class="flex flex-col items-center gap-1.5 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined text-[26px]">shopping_cart</span>
+<p class="text-[9px] font-extrabold uppercase tracking-widest">Cart</p>
+</a>
+<a class="flex flex-col items-center gap-1.5 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined text-[26px]">favorite</span>
+<p class="text-[9px] font-extrabold uppercase tracking-widest">Favorites</p>
+</a>
+<a class="flex flex-col items-center gap-1.5 text-slate-400 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined text-[26px]">person</span>
+<p class="text-[9px] font-extrabold uppercase tracking-widest">Profile</p>
+</a>
+</nav>
+</body></html>

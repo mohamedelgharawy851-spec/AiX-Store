@@ -1,0 +1,11 @@
+node_modules
+.venv
+.git
+.gitignore
+dist
+build
+coverage
+.expo
+__pycache__
+*.pyc
+db.sqlite3

@@ -1,0 +1,27 @@
+node_modules/
+.expo/
+.turbo/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.env.local
+.venv/
+venv/
+__pycache__/
+*.pyc
+db.sqlite3
+.DS_Store
+
+# Local runtime data
+services/scraper/data/*
+!services/scraper/data/.gitkeep
+services/scraper-python/data/*
+!services/scraper-python/data/.gitkeep
+
+# Local graph/runtime downloads
+neo4j-community-5.20.0/
+neo4j-community-*.tar.gz

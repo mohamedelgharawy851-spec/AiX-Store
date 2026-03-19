@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Product Explorer</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#3884ff",
+                        "background-light": "#f8fafc",
+                        "background-dark": "#0f172a",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: { 
+                        "DEFAULT": "0.5rem", 
+                        "lg": "0.75rem", 
+                        "xl": "1rem", 
+                        "full": "9999px" 
+                    },
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .fill-1 {
+            font-variation-settings: 'FILL' 1;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 font-display min-h-screen">
+<!-- Top Navigation Bar -->
+<header class="sticky top-0 z-50 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800">
+<div class="flex items-center p-4 justify-between max-w-7xl mx-auto">
+<div class="flex items-center gap-4">
+<button class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+<span class="material-symbols-outlined">arrow_back</span>
+</button>
+<h1 class="text-lg font-bold tracking-tight">Marketplace</h1>
+</div>
+<div class="flex items-center gap-1">
+<button class="p-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+<span class="material-symbols-outlined">search</span>
+</button>
+<button class="p-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative">
+<span class="material-symbols-outlined">shopping_cart</span>
+<span class="absolute top-2 right-2 flex h-4 w-4 items-center justify-center bg-primary text-white text-[10px] font-bold rounded-full">3</span>
+</button>
+</div>
+</div>
+<!-- Refined Filters Section -->
+<div class="flex gap-2 px-4 pb-4 overflow-x-auto no-scrollbar max-w-7xl mx-auto items-center">
+<button class="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-950 px-4 hover:opacity-90 transition-opacity">
+<span class="material-symbols-outlined text-lg">tune</span>
+<span class="text-xs font-semibold">Filters</span>
+</button>
+<div class="h-4 w-px bg-slate-200 dark:bg-slate-800 shrink-0 mx-1"></div>
+<button class="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 hover:border-primary transition-colors group">
+<span class="text-xs font-medium">Category</span>
+<span class="material-symbols-outlined text-base text-slate-400 group-hover:text-primary">expand_more</span>
+</button>
+<button class="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-4 hover:border-primary transition-colors group">
+<span class="text-xs font-medium">Price</span>
+<span class="material-symbols-outlined text-base text-slate-400 group-hover:text-primary">expand_more</span>
+</button>
+<button class="flex h-9 shrink-0 items-center justify-center gap-x-1.5 rounded-full bg-primary/10 border border-primary/20 px-4 text-primary">
+<span class="text-xs font-semibold">Featured</span>
+<span class="material-symbols-outlined text-base">swap_vert</span>
+</button>
+</div>
+</header>
+<main class="max-w-7xl mx-auto p-4 mb-24">
+<!-- Product Grid with consistent card heights -->
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-8">
+<!-- Product Card 1 -->
+<div class="flex flex-col h-full group">
+<div class="relative w-full aspect-[4/5] bg-slate-100 dark:bg-slate-800 rounded-2xl overflow-hidden mb-3">
+<div class="absolute inset-0 bg-center bg-cover transition-transform duration-700 group-hover:scale-105" data-alt="Professional wireless black over-ear headphones" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAYoR4ujNfhA7r_KECTj_jBMOiqYK9vCXjfFNeZ0nPA8DFTmXxaS6pi6yENksZkL5idA9l5yv-ehnqoAxMURBJA4zpwfbA6zL1cuVzeyQ5CqFQzmWwuJYw5yU6oW914Bl1iRjq4R1-Ad5BiGdMbP3kTcRoXHhOdAvfF5rTBCTT0VUj5uovEVvw_o7KQhpjj_xPR95T4sUgGLItwGuKOHbxaKibqEoCsknAonlSXZsvW5lhRjgo__k8Wh99FYwF6Zt4pPb8b8VmBSzj4");'></div>
+<button class="absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full text-slate-900 dark:text-white shadow-sm hover:text-red-500 transition-colors">
+<span class="material-symbols-outlined text-xl">favorite</span>
+</button>
+<div class="absolute bottom-3 left-3 bg-primary text-white text-[9px] font-bold px-2 py-0.5 rounded shadow-sm uppercase tracking-wider">New</div>
+</div>
+<div class="flex flex-col flex-grow gap-1 px-1">
+<div class="flex items-center gap-1 mb-0.5">
+<span class="material-symbols-outlined text-sm text-yellow-500 fill-1">star</span>
+<span class="text-[11px] font-bold text-slate-700 dark:text-slate-300">4.8</span>
+<span class="text-[11px] text-slate-400 dark:text-slate-500">(1.2k)</span>
+</div>
+<h3 class="text-slate-900 dark:text-slate-100 font-semibold text-sm line-clamp-1">Pro Wireless Headphones</h3>
+<p class="text-slate-500 dark:text-slate-400 text-[12px] line-clamp-2 leading-relaxed flex-grow">Active noise cancellation with 40h battery life.</p>
+<p class="text-primary font-bold text-base mt-1.5">$199.99</p>
+</div>
+</div>
+<!-- Product Card 2 -->
+<div class="flex flex-col h-full group">
+<div class="relative w-full aspect-[4/5] bg-slate-100 dark:bg-slate-800 rounded-2xl overflow-hidden mb-3">
+<div class="absolute inset-0 bg-center bg-cover transition-transform duration-700 group-hover:scale-105" data-alt="Modern red high-performance running shoes" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuCV1sWZGS8FylcBSG0ULkRyrBo3qalfFvbxa5srNvq1whBhbw3rXbQVuhdxbRctYjoVGvVitjTewAz-kf7BmfStRgI7sTVJvsomIT96f8eP1dNESXQ81XkiZrRIRkxWb9FtF3S8HuM4kbTmhrBMtRcMVI17dRpTn0BLN-vM7TrWUEOUCQauInvbZbFSs7YkJPE3rbnICsIHtY1Ksjy6-0HpVIoGOEQxGFEUmIVd7GwM4BHUgPDrVHp20Llq5OySy9XGjvG5QoktcDnR");'></div>
+<button class="absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full text-slate-900 dark:text-white shadow-sm hover:text-red-500 transition-colors">
+<span class="material-symbols-outlined text-xl">favorite</span>
+</button>
+</div>
+<div class="flex flex-col flex-grow gap-1 px-1">
+<div class="flex items-center gap-1 mb-0.5">
+<span class="material-symbols-outlined text-sm text-yellow-500 fill-1">star</span>
+<span class="text-[11px] font-bold text-slate-700 dark:text-slate-300">4.5</span>
+<span class="text-[11px] text-slate-400 dark:text-slate-500">(850)</span>
+</div>
+<h3 class="text-slate-900 dark:text-slate-100 font-semibold text-sm line-clamp-1">Running Shoes Pro</h3>
+<p class="text-slate-500 dark:text-slate-400 text-[12px] line-clamp-2 leading-relaxed flex-grow">Ultra-lightweight mesh for long distance comfort.</p>
+<p class="text-primary font-bold text-base mt-1.5">$120.00</p>
+</div>
+</div>
+<!-- Product Card 3 -->
+<div class="flex flex-col h-full group">
+<div class="relative w-full aspect-[4/5] bg-slate-100 dark:bg-slate-800 rounded-2xl overflow-hidden mb-3">
+<div class="absolute inset-0 bg-center bg-cover transition-transform duration-700 group-hover:scale-105" data-alt="Minimalist white smart watch on white background" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuA8UHuXxE4cpWRypwhJ7Ts2JV6UBN3s_GQoBRHsBJEPScZDiImpHTWi71OSM6B474l2D82mAv_ihnc7o3ZypRxvFCOPuFyFgJHt7vLCv3SzVWQIdR64lkdG2beHYP-xyRe3TJPhcggdxpgjRE3izh9zw7y7ZUvozXDTM01HvcB1UjxkwblE-OHLJvLRmkFYl92fW20jfYk0dYlnpLrRo4AEtQVtfT0wLJT9PyG6Ng7wRqXCp6mtzCuU3Bf2uxtDBF84M82p7rOC0fqI");'></div>
+<button class="absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full text-slate-900 dark:text-white shadow-sm hover:text-red-500 transition-colors">
+<span class="material-symbols-outlined text-xl">favorite</span>
+</button>
+<div class="absolute bottom-3 left-3 bg-red-500 text-white text-[9px] font-bold px-2 py-0.5 rounded shadow-sm uppercase tracking-wider">-20% OFF</div>
+</div>
+<div class="flex flex-col flex-grow gap-1 px-1">
+<div class="flex items-center gap-1 mb-0.5">
+<span class="material-symbols-outlined text-sm text-yellow-500 fill-1">star</span>
+<span class="text-[11px] font-bold text-slate-700 dark:text-slate-300">4.9</span>
+<span class="text-[11px] text-slate-400 dark:text-slate-500">(2.1k)</span>
+</div>
+<h3 class="text-slate-900 dark:text-slate-100 font-semibold text-sm line-clamp-1">Smart Watch Series 5</h3>
+<p class="text-slate-500 dark:text-slate-400 text-[12px] line-clamp-2 leading-relaxed flex-grow">Waterproof with health monitoring features.</p>
+<div class="flex items-baseline gap-2 mt-1.5">
+<p class="text-primary font-bold text-base">$350.00</p>
+<p class="text-slate-400 dark:text-slate-500 text-[11px] line-through">$420.00</p>
+</div>
+</div>
+</div>
+<!-- Product Card 4 -->
+<div class="flex flex-col h-full group">
+<div class="relative w-full aspect-[4/5] bg-slate-100 dark:bg-slate-800 rounded-2xl overflow-hidden mb-3">
+<div class="absolute inset-0 bg-center bg-cover transition-transform duration-700 group-hover:scale-105" data-alt="Vintage style leather travel backpack" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuDTL8PXdVDSvTyUf0cOMSImJwebwH1CftZ-3LoDuG7v8VkADu6uNhTHhmvFUModLEhorI-3KCC98HlKfApzxczgeRK4nRH4DE_kNwmW0ul_rFsbSdka-xgQboQBkwbYSo8-bGqUpl8huUkqcLQ0kww_-aTDU9JuKQLhAyuUSsRqGYFRjoxsImMl30N7tNjHSi6xLHy9vahBCnrqfIiCK33o_FMdID1x0SFHFHCu4gYSk-y08rmBaJ4YD2hVGNfJeeco2lWVxCPBoegy");'></div>
+<button class="absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full text-slate-900 dark:text-white shadow-sm hover:text-red-500 transition-colors">
+<span class="material-symbols-outlined text-xl">favorite</span>
+</button>
+</div>
+<div class="flex flex-col flex-grow gap-1 px-1">
+<div class="flex items-center gap-1 mb-0.5">
+<span class="material-symbols-outlined text-sm text-yellow-500 fill-1">star</span>
+<span class="text-[11px] font-bold text-slate-700 dark:text-slate-300">4.7</span>
+<span class="text-[11px] text-slate-400 dark:text-slate-500">(450)</span>
+</div>
+<h3 class="text-slate-900 dark:text-slate-100 font-semibold text-sm line-clamp-1">Leather Travel Bag</h3>
+<p class="text-slate-500 dark:text-slate-400 text-[12px] line-clamp-2 leading-relaxed flex-grow">Genuine leather with handcrafted finishes.</p>
+<p class="text-primary font-bold text-base mt-1.5">$85.00</p>
+</div>
+</div>
+<!-- Product Card 5 -->
+<div class="flex flex-col h-full group">
+<div class="relative w-full aspect-[4/5] bg-slate-100 dark:bg-slate-800 rounded-2xl overflow-hidden mb-3">
+<div class="absolute inset-0 bg-center bg-cover transition-transform duration-700 group-hover:scale-105" data-alt="Retro polaroid camera on teal background" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuDxvuECJRW5ctFE8AiuA6gD0zlYlXqlcQgMYi7JMocPTBPibjn6yUYx06_jCHYaBsRPdqydas1qW8vKQNm4QfVP8a6X6OUhxkX2FbBCrLLLM4GuXTql4S9WJF_GCHjjxmH-1LLsc0bM5ytHUAQA-GPApqDBASTPCby8HLYPZqkZ1jl2s81W1xJx2zml_mDvYE0SqAs7wXOd3j3phelwPpw42ZkA5HTPuzqpgLSkuI33odiy2k5Hhjefdott940AW6OfSb2jMHYcPRpp");'></div>
+<button class="absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full text-slate-900 dark:text-white shadow-sm hover:text-red-500 transition-colors">
+<span class="material-symbols-outlined text-xl">favorite</span>
+</button>
+</div>
+<div class="flex flex-col flex-grow gap-1 px-1">
+<div class="flex items-center gap-1 mb-0.5">
+<span class="material-symbols-outlined text-sm text-yellow-500 fill-1">star</span>
+<span class="text-[11px] font-bold text-slate-700 dark:text-slate-300">4.6</span>
+<span class="text-[11px] text-slate-400 dark:text-slate-500">(120)</span>
+</div>
+<h3 class="text-slate-900 dark:text-slate-100 font-semibold text-sm line-clamp-1">Retro Instant Camera</h3>
+<p class="text-slate-500 dark:text-slate-400 text-[12px] line-clamp-2 leading-relaxed flex-grow">Capture moments instantly with vintage vibes.</p>
+<p class="text-primary font-bold text-base mt-1.5">$129.00</p>
+</div>
+</div>
+<!-- Product Card 6 -->
+<div class="flex flex-col h-full group">
+<div class="relative w-full aspect-[4/5] bg-slate-100 dark:bg-slate-800 rounded-2xl overflow-hidden mb-3">
+<div class="absolute inset-0 bg-center bg-cover transition-transform duration-700 group-hover:scale-105" data-alt="Silver tablet with stylus on desk" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuDSqZWCxZ8EGvl2mKT7KUBAKm-Bsu4haVy9V5EQ0zc-c8UDT__dt8jUiaXQGQo3F3NiXBDkD_t-2Iy2IC05t2vzEfGezm2SiHaUjAXM-5zLlt28IF9RhDyl3Yg_zsPaWEeHp_C2dOHkPDbVmClZDjyQgqnnqR9aqgtnhGkhlUb-INr7vWn4Hcga7Y8tIXhhK9qYdT51fepzP8yI3OoPXcPykXk5YHhKvNh4y7ZsP2XU28jqZssgxL8TrkznYwIYrit0GZ5WpD_7PY3H");'></div>
+<button class="absolute top-3 right-3 p-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur rounded-full text-slate-900 dark:text-white shadow-sm hover:text-red-500 transition-colors">
+<span class="material-symbols-outlined text-xl">favorite</span>
+</button>
+</div>
+<div class="flex flex-col flex-grow gap-1 px-1">
+<div class="flex items-center gap-1 mb-0.5">
+<span class="material-symbols-outlined text-sm text-yellow-500 fill-1">star</span>
+<span class="text-[11px] font-bold text-slate-700 dark:text-slate-300">4.8</span>
+<span class="text-[11px] text-slate-400 dark:text-slate-500">(3.4k)</span>
+</div>
+<h3 class="text-slate-900 dark:text-slate-100 font-semibold text-sm line-clamp-1">Pro Creative Tablet</h3>
+<p class="text-slate-500 dark:text-slate-400 text-[12px] line-clamp-2 leading-relaxed flex-grow">Designed for digital artists and professionals.</p>
+<p class="text-primary font-bold text-base mt-1.5">$799.00</p>
+</div>
+</div>
+</div>
+</main>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 pb-safe z-50">
+<div class="flex max-w-7xl mx-auto h-16">
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 transition-colors hover:text-primary" href="#">
+<span class="material-symbols-outlined text-[26px]">home</span>
+<p class="text-[10px] font-semibold leading-none">Home</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-primary transition-colors" href="#">
+<span class="material-symbols-outlined text-[26px] fill-1">search</span>
+<p class="text-[10px] font-semibold leading-none">Search</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 transition-colors hover:text-primary" href="#">
+<span class="material-symbols-outlined text-[26px]">shopping_cart</span>
+<p class="text-[10px] font-semibold leading-none">Cart</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 transition-colors hover:text-primary" href="#">
+<span class="material-symbols-outlined text-[26px]">favorite</span>
+<p class="text-[10px] font-semibold leading-none">Favorites</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 transition-colors hover:text-primary" href="#">
+<span class="material-symbols-outlined text-[26px]">person</span>
+<p class="text-[10px] font-semibold leading-none">Profile</p>
+</a>
+</div>
+</nav>
+</body></html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#3884ff",
+                        "background-light": "#f8fafc",
+                        "background-dark": "#0f172a",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.5rem",
+                        "lg": "0.75rem",
+                        "xl": "1rem",
+                        "2xl": "1.5rem",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+<title>Shopping Cart</title>
+<style>
+        body {
+            min-height: 100dvh;
+        }
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+<div class="relative flex min-h-screen flex-col max-w-lg mx-auto bg-white dark:bg-slate-900 shadow-2xl pb-32">
+<!-- Header -->
+<div class="flex items-center px-4 py-4 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl z-20">
+<button class="size-10 flex items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+<span class="material-symbols-outlined text-slate-600 dark:text-slate-400">arrow_back</span>
+</button>
+<h1 class="text-lg font-bold flex-1 text-center mr-10 tracking-tight">Shopping Cart</h1>
+</div>
+<!-- Cart Items List -->
+<div class="flex-1 overflow-y-auto px-5 py-6 space-y-8">
+<!-- Item 1 -->
+<div class="relative flex gap-4">
+<div class="size-24 shrink-0 rounded-2xl bg-slate-50 dark:bg-slate-800 bg-cover bg-center ring-1 ring-slate-100 dark:ring-slate-700" data-alt="Minimalist white organic cotton t-shirt flat lay" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuBhcGPNRH0tTOmRPpHmI7USOQ8GBYpfI8ZOgVr7F0ptV0aOJFBsElb19H0O7jRb0T_T0dJf1NwvwYlv6fsIJ1dh1Bwl7J2gTMC6xp4Lg5gBMT_OdCrxb4QMRbVqbel0Hgr1YvPFEPwHLQf_XJDrHRDK58FdGtyUlK8dMjTf7FduqrWrDIiWQTLkKnDt_PPx0xOUd3PGrorAHoIgbhJIxiMt-mkiIBtCDLhgoXkzbVaBZLwbu8MD8FxUO5k7zOzZWsf2Be7l0-zdOoGx");'>
+</div>
+<div class="flex flex-1 flex-col">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-semibold text-base leading-snug">Organic Cotton T-Shirt</h3>
+<button class="text-slate-400 hover:text-red-500 transition-colors -mt-1 -mr-1 p-1">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<p class="text-[13px] text-slate-500 dark:text-slate-400">White • Medium</p>
+<div class="flex items-end justify-between mt-auto">
+<span class="text-lg font-bold text-slate-900 dark:text-white">$29.00</span>
+<div class="flex items-center ring-1 ring-slate-200 dark:ring-slate-700 rounded-lg overflow-hidden h-9">
+<button class="w-9 h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-500">
+<span class="material-symbols-outlined text-base">remove</span>
+</button>
+<span class="w-8 text-center text-sm font-semibold">1</span>
+<button class="w-9 h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-500">
+<span class="material-symbols-outlined text-base">add</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<div class="h-px bg-gradient-to-r from-transparent via-slate-100 dark:via-slate-800 to-transparent"></div>
+<!-- Item 2 -->
+<div class="relative flex gap-4">
+<div class="size-24 shrink-0 rounded-2xl bg-slate-50 dark:bg-slate-800 bg-cover bg-center ring-1 ring-slate-100 dark:ring-slate-700" data-alt="Blue slim fit denim jeans on hanger" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAo5IiAf5CY9z7nCvGuuiZ78P4zKz3YFTREdRpgwvGrWjnGaGdJDx_KX43jjhYXXkvRAzRD1_WYPWlEF3FvVZelOzssXUunumJbK9hY2LhbO4-QFwJmXUnqMXHC3QG3T4we-McZhgu_hJYG2I7ws0tTDrYPbKwEBkUI4W72AlfQGzY6ySDG6eKwyAFUTK4PkTftyvANTxEZCLhgR84cENDCuz13HAnqVKdu0MSLxKrU165MHq26S5hS5-seTAhWfXr5369gVmz7qgRD");'>
+</div>
+<div class="flex flex-1 flex-col">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-semibold text-base leading-snug">Slim Fit Denim</h3>
+<button class="text-slate-400 hover:text-red-500 transition-colors -mt-1 -mr-1 p-1">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<p class="text-[13px] text-slate-500 dark:text-slate-400">Indigo • 32/34</p>
+<div class="flex items-end justify-between mt-auto">
+<span class="text-lg font-bold text-slate-900 dark:text-white">$89.00</span>
+<div class="flex items-center ring-1 ring-slate-200 dark:ring-slate-700 rounded-lg overflow-hidden h-9">
+<button class="w-9 h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-500">
+<span class="material-symbols-outlined text-base">remove</span>
+</button>
+<span class="w-8 text-center text-sm font-semibold">1</span>
+<button class="w-9 h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-500">
+<span class="material-symbols-outlined text-base">add</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<div class="h-px bg-gradient-to-r from-transparent via-slate-100 dark:via-slate-800 to-transparent"></div>
+<!-- Item 3 -->
+<div class="relative flex gap-4">
+<div class="size-24 shrink-0 rounded-2xl bg-slate-50 dark:bg-slate-800 bg-cover bg-center ring-1 ring-slate-100 dark:ring-slate-700" data-alt="Modern stylish wrist watch with leather strap" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuB1n_b6sd4EOIAgEcwPRj65DuRA4y6nmIVj1AhvC6HKLJ5xA_CGaU0znU4AsJey6bM15arXhJsN2KH65AXK8DPJCjwzbAbrbDYYoNcauwfAOyFS950TnU5Bk3Vep7U-Q2MTV6ii1vlRAKEVDlYFdRm-Pmgka14ULzaQH0f6tpwh07yOEaV0-38xfdaXxwSk62Wqln0PgokLQv-maQyG3NOOQRi7pmUauRuLEy3jbUyPHG_HdU5kEjjLQt-tSPl7LKXnZFFXudFIrPGL");'>
+</div>
+<div class="flex flex-1 flex-col">
+<div class="flex justify-between items-start mb-1">
+<h3 class="font-semibold text-base leading-snug">Classic Wrist Watch</h3>
+<button class="text-slate-400 hover:text-red-500 transition-colors -mt-1 -mr-1 p-1">
+<span class="material-symbols-outlined text-xl">delete</span>
+</button>
+</div>
+<p class="text-[13px] text-slate-500 dark:text-slate-400">Silver/Brown • One Size</p>
+<div class="flex items-end justify-between mt-auto">
+<span class="text-lg font-bold text-slate-900 dark:text-white">$145.00</span>
+<div class="flex items-center ring-1 ring-slate-200 dark:ring-slate-700 rounded-lg overflow-hidden h-9">
+<button class="w-9 h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-500">
+<span class="material-symbols-outlined text-base">remove</span>
+</button>
+<span class="w-8 text-center text-sm font-semibold">1</span>
+<button class="w-9 h-full flex items-center justify-center hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors text-slate-500">
+<span class="material-symbols-outlined text-base">add</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Summary & Checkout -->
+<div class="mt-auto p-6 bg-slate-50/80 dark:bg-slate-800/80 backdrop-blur-xl border-t border-slate-200 dark:border-slate-800 space-y-6">
+<div class="space-y-3">
+<div class="flex justify-between items-center text-sm font-medium">
+<span class="text-slate-500 dark:text-slate-400">Subtotal</span>
+<span class="text-slate-900 dark:text-white">$263.00</span>
+</div>
+<div class="flex justify-between items-center text-sm font-medium">
+<span class="text-slate-500 dark:text-slate-400">Shipping</span>
+<span class="text-emerald-600 dark:text-emerald-400">Free</span>
+</div>
+<div class="pt-3 flex justify-between items-end border-t border-slate-200 dark:border-slate-700">
+<div class="flex flex-col">
+<span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Total Amount</span>
+<span class="text-2xl font-black text-slate-900 dark:text-white">$263.00</span>
+</div>
+<p class="text-[10px] text-slate-400 font-medium">VAT included</p>
+</div>
+</div>
+<button class="w-full bg-primary hover:bg-primary/95 text-white font-bold py-4.5 rounded-2xl shadow-xl shadow-primary/30 transition-all hover:translate-y-[-1px] active:scale-[0.98] flex items-center justify-center gap-3">
+<span class="text-lg">Proceed to Checkout</span>
+<span class="material-symbols-outlined text-2xl">arrow_forward</span>
+</button>
+</div>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200/60 dark:border-slate-800/60 pb-safe z-50">
+<div class="flex max-w-lg mx-auto h-16">
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">home</span>
+<p class="text-[10px] font-bold leading-none uppercase tracking-tighter">Home</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">search</span>
+<p class="text-[10px] font-bold leading-none uppercase tracking-tighter">Search</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-primary" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1">shopping_cart</span>
+<p class="text-[10px] font-bold leading-none uppercase tracking-tighter">Cart</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">favorite</span>
+<p class="text-[10px] font-bold leading-none uppercase tracking-tighter">Favorites</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-center gap-1 text-slate-400 dark:text-slate-500 hover:text-primary transition-colors" href="#">
+<span class="material-symbols-outlined">person</span>
+<p class="text-[10px] font-bold leading-none uppercase tracking-tighter">Profile</p>
+</a>
+</div>
+</nav>
+</div>
+</body></html>

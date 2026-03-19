@@ -1,0 +1,22 @@
+{
+  "name": "shopease",
+  "private": true,
+  "packageManager": "npm@10.9.4",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "catalog:runtime": "node services/scraper/server.mjs",
+    "catalog:audit-sqlite": "PYTHONPATH=services/scraper-python ./.venv/bin/python services/scraper-python/scripts/audit_sqlite_for_supabase.py",
+    "catalog:check-supabase": "PYTHONPATH=services/scraper-python ./.venv/bin/python services/scraper-python/scripts/check_supabase_connection.py",
+    "catalog:migrate-supabase": "PYTHONPATH=services/scraper-python ./.venv/bin/python services/scraper-python/scripts/migrate_sqlite_to_supabase.py --apply-schema",
+    "catalog:trigger-password-resets": "PYTHONPATH=services/scraper-python ./.venv/bin/python services/scraper-python/scripts/trigger_supabase_password_resets.py",
+    "catalog:reset": "PYTHONPATH=services/scraper-python ./.venv/bin/python services/scraper-python/scripts/reset_catalog.py --reseed --full-baseline",
+    "mobile": "npm --workspace apps/mobile run start",
+    "mobile:android": "npm --workspace apps/mobile run android"
+  },
+  "devDependencies": {
+    "@types/react": "19.0.10",
+    "typescript": "5.8.3"
+  }
+}

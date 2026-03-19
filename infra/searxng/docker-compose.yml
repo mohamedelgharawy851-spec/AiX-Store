@@ -1,0 +1,19 @@
+services:
+  redis:
+    image: docker.io/valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "8088:8080"
+    environment:
+      BASE_URL: "http://127.0.0.1:8088/"
+      SEARXNG_SECRET: "replace-me"
+      REDIS_URL: "redis://redis:6379/0"
+    volumes:
+      - ./:/etc/searxng:ro,Z
