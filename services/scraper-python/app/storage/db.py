@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -147,7 +148,13 @@ def initialize_database() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _write_connection() as connection:
         if postgres_enabled():
-            connection.executescript(POSTGRES_SCHEMA_PATH.read_text("utf-8"))
+            try:
+                connection.executescript(POSTGRES_SCHEMA_PATH.read_text("utf-8"))
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Schema init skipped (already exists or timeout): %s",
+                    exc,
+                )
             _repair_invalid_product_pricing(connection)
             connection.commit()
             return
