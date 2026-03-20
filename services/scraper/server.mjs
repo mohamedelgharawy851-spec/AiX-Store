@@ -6,7 +6,7 @@ import { RUNTIME_HOST, RUNTIME_PORT } from "./lib/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-if (!process.env.RAILWAY_ENVIRONMENT) {
+if (!process.env.RAILWAY_ENVIRONMENT && !process.env.SPACE_ID) {
   const { loadAIXStoreEnv } = await import("../../scripts/load-env.mjs");
   loadAIXStoreEnv(path.resolve(__dirname, "../.."));
 }
