@@ -316,9 +316,11 @@ const server = http.createServer(async (request, response) => {
 
     sendJson(response, 404, { error: "Not found" });
   } catch (error) {
+    console.error("Server error handling request:", error);
     sendJson(response, 500, {
       error: "Runtime request failed",
       detail: error instanceof Error ? error.message : String(error),
+      cause: error.cause instanceof Error ? error.cause.message : String(error.cause),
     });
   }
 });
