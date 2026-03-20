@@ -254,28 +254,14 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (url.pathname === "/auth/signup") {
-      await proxyJson(request, response, "/auth/signup");
+    if (url.pathname.startsWith("/auth/")) {
+      await proxyJson(request, response, url.pathname, undefined, url.search);
       return;
     }
 
-    if (url.pathname === "/auth/login") {
-      await proxyJson(request, response, "/auth/login");
-      return;
-    }
-
-    if (url.pathname === "/auth/logout") {
-      await proxyJson(request, response, "/auth/logout");
-      return;
-    }
-
-    if (url.pathname === "/me") {
-      await proxyJson(request, response, "/me");
-      return;
-    }
-
-    if (url.pathname === "/me/history") {
-      await proxyJson(request, response, "/me/history", undefined, url.search);
+    if (url.pathname.startsWith("/me/favorites/")) {
+      const decorate = request.method === "PUT" ? decorateProduct : undefined;
+      await proxyJson(request, response, url.pathname, decorate, url.search);
       return;
     }
 
@@ -289,8 +275,8 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (url.pathname === "/me/events") {
-      await proxyJson(request, response, "/me/events");
+    if (url.pathname.startsWith("/me")) {
+      await proxyJson(request, response, url.pathname, undefined, url.search);
       return;
     }
 
