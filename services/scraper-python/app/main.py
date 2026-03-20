@@ -103,6 +103,18 @@ async def health():
     return {"status": "ok", "service": SERVICE_NAME}
 
 
+@app.get("/health/db")
+def health_db():
+    try:
+        from .storage.db import get_connection
+        with get_connection() as connection:
+            connection.execute("SELECT 1")
+        return {"status": "ok", "database": "connected"}
+    except Exception as exc:
+        logger.exception("Database health check failed")
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(exc)}")
+
+
 @app.get("/ai/health")
 async def ai_health():
     return {
