@@ -258,7 +258,7 @@ async def catalog_product_related(
 
 
 @app.post("/auth/signup")
-async def auth_signup(payload: dict):
+def auth_signup(payload: dict):
     try:
         return create_user(str(payload.get("email", "")), str(payload.get("password", "")))
     except ValueError as exc:
@@ -266,7 +266,7 @@ async def auth_signup(payload: dict):
 
 
 @app.post("/auth/login")
-async def auth_login(payload: dict):
+def auth_login(payload: dict):
     email = str(payload.get("email", "")).strip().lower()
     try:
         result = authenticate_user(email, str(payload.get("password", "")))
@@ -283,7 +283,7 @@ async def auth_login(payload: dict):
 
 
 @app.post("/auth/logout")
-async def auth_logout(authorization: str | None = Header(default=None)):
+def auth_logout(authorization: str | None = Header(default=None)):
     token = _extract_token(authorization)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
@@ -292,7 +292,7 @@ async def auth_logout(authorization: str | None = Header(default=None)):
 
 
 @app.get("/me")
-async def me(authorization: str | None = Header(default=None)):
+def me(authorization: str | None = Header(default=None)):
     token = _extract_token(authorization)
     user = get_user_by_token(token or "", touch=True)
     if not user:
@@ -301,7 +301,7 @@ async def me(authorization: str | None = Header(default=None)):
 
 
 @app.get("/me/history")
-async def me_history(
+def me_history(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, alias="pageSize", ge=1, le=100),
     authorization: str | None = Header(default=None),
@@ -317,7 +317,7 @@ async def me_history(
 
 
 @app.get("/me/favorites")
-async def me_favorites(
+def me_favorites(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, alias="pageSize", ge=1, le=100),
     authorization: str | None = Header(default=None),
@@ -327,7 +327,7 @@ async def me_favorites(
 
 
 @app.put("/me/favorites/{product_id}")
-async def me_favorite_put(product_id: str, authorization: str | None = Header(default=None)):
+def me_favorite_put(product_id: str, authorization: str | None = Header(default=None)):
     user_id = _require_user_id(authorization)
     try:
         return add_user_favorite(user_id, product_id)
@@ -336,13 +336,13 @@ async def me_favorite_put(product_id: str, authorization: str | None = Header(de
 
 
 @app.delete("/me/favorites/{product_id}")
-async def me_favorite_delete(product_id: str, authorization: str | None = Header(default=None)):
+def me_favorite_delete(product_id: str, authorization: str | None = Header(default=None)):
     user_id = _require_user_id(authorization)
     return {"ok": remove_user_favorite(user_id, product_id)}
 
 
 @app.get("/me/recommendations")
-async def me_recommendations(
+def me_recommendations(
     page: int = Query(1, ge=1),
     page_size: int = Query(DEFAULT_PAGE_SIZE, alias="pageSize", ge=1, le=100),
     authorization: str | None = Header(default=None),
@@ -358,7 +358,7 @@ async def me_recommendations(
 
 
 @app.post("/me/events")
-async def me_events(
+def me_events(
     payload: dict,
     authorization: str | None = Header(default=None),
     x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
