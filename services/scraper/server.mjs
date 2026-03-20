@@ -197,6 +197,15 @@ const server = http.createServer(async (request, response) => {
 
   const url = new URL(request.url, runtimeOrigin(request));
 
+  if (url.pathname === "/") {
+    sendJson(response, 200, {
+      status: "ok",
+      service: "catalog-runtime",
+      message: "AIXStore runtime is running. FastApi upstream: " + PYTHON_BASE_URL,
+    });
+    return;
+  }
+
   try {
     if (url.pathname === "/health") {
       const upstream = await fetchUpstream("/health");
