@@ -10,6 +10,9 @@ import re
 import secrets
 import sqlite3
 import threading
+
+logger = logging.getLogger(__name__)
+
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
