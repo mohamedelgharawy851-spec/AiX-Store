@@ -4,17 +4,40 @@ import { fileURLToPath } from "node:url";
 
 import { RUNTIME_HOST, RUNTIME_PORT } from "./lib/config.mjs";
 
+// ── Keep-alive: prevent Node from exiting when event loop is idle ────────────
+const _keepAlive = setInterval(() => {}, 1 << 30);
+
+// ── Global error visibility ───────────────────────────────────────────────────
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection:", err);
+});
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Load local .env only in non-cloud environments (safe – won't crash if missing)
 if (!process.env.RAILWAY_ENVIRONMENT && !process.env.SPACE_ID) {
-  const { loadAIXStoreEnv } = await import("../../scripts/load-env.mjs");
-  loadAIXStoreEnv(path.resolve(__dirname, "../.."));
+  try {
+    const { loadAIXStoreEnv } = await import("../../scripts/load-env.mjs");
+    loadAIXStoreEnv(path.resolve(__dirname, "../.."));
+  } catch {
+    // Running locally without a load-env helper – continue with process.env as-is
+  }
 }
 
+// ── Upstream FastAPI URL ──────────────────────────────────────────────────────
+// Set AIXSTORE_FASTAPI_URL=https://shadypro-aixstore-api.hf.space in HF Space secrets
 const FASTAPI_URL = (process.env.AIXSTORE_FASTAPI_URL || "").trim().replace(/\/+$/, "");
 const PYTHON_HOST = process.env.AIXSTORE_PYTHON_HOST || "127.0.0.1";
 const PYTHON_PORT = Number(process.env.AIXSTORE_PYTHON_PORT || 8790);
 const PYTHON_BASE_URL = FASTAPI_URL || `http://${PYTHON_HOST}:${PYTHON_PORT}`;
+
+console.log(`[config] upstream FastAPI  : ${PYTHON_BASE_URL}`);
+console.log(`[config] runtime port      : ${RUNTIME_PORT}`);
+console.log(`[config] runtime host      : ${RUNTIME_HOST}`);
 
 function corsHeaders(extra = {}) {
   return {
@@ -303,6 +326,11 @@ const server = http.createServer(async (request, response) => {
       detail: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+// Surface server-level errors (e.g. EADDRINUSE)
+server.on("error", (err) => {
+  console.error("Server error:", err);
 });
 
 server.listen(RUNTIME_PORT, RUNTIME_HOST, () => {
