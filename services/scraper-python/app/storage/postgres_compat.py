@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import logging
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -44,7 +45,7 @@ def _pool() -> ConnectionPool:
         _POOL = ConnectionPool(
             conninfo=DATABASE_URL,
             min_size=1,
-            max_size=6,
+            max_size=20,
             kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
         )
@@ -189,4 +190,7 @@ class PostgresConnectionWrapper:
 
 def get_connection() -> PostgresConnectionWrapper:
     pool = _pool()
-    return PostgresConnectionWrapper(pool.getconn(), pool)
+    logging.getLogger(__name__).debug("Requesting connection from pool (size: %s)", pool.wait_count)
+    conn = pool.getconn()
+    logging.getLogger(__name__).debug("Obtained connection from pool")
+    return PostgresConnectionWrapper(conn, pool)

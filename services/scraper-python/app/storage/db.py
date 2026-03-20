@@ -2222,6 +2222,7 @@ def _supabase_request(
         "Content-Type": "application/json",
     }
     headers["Authorization"] = f"Bearer {token or SUPABASE_SERVICE_ROLE_KEY}"
+    logging.getLogger(__name__).debug("Supabase request: %s %s", method, path)
     response = httpx.request(
         method,
         f"{SUPABASE_URL.rstrip('/')}{path}",
@@ -2231,6 +2232,7 @@ def _supabase_request(
         timeout=20.0,
         follow_redirects=True,
     )
+    logging.getLogger(__name__).debug("Supabase response: %s", response.status_code)
     response.raise_for_status()
     return response
 
@@ -2401,6 +2403,7 @@ def create_user(email: str, password: str) -> dict[str, Any]:
 def authenticate_user(email: str, password: str) -> dict[str, Any]:
     normalized_email = _normalize_email(email)
     if _supabase_auth_enabled():
+        logger.info("Authenticating user via Supabase: %s", normalized_email)
         try:
             response = _supabase_request(
                 "POST",
@@ -2429,10 +2432,15 @@ def authenticate_user(email: str, password: str) -> dict[str, Any]:
                 sorted(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
             )
             raise ValueError("Invalid email or password.")
+
+        logger.info("Supabase login successful for %s, fetching profile from DB", normalized_email)
         with get_connection() as connection:
+            logger.debug("Upserting profile for user %s", user_payload.get("id"))
             _upsert_profile_for_supabase_user(connection, user_payload)
             connection.commit()
+            logger.debug("Fetching public user payload for user %s", user_payload.get("id"))
             user = _public_user_payload(connection, str(user_payload["id"]))
+        logger.info("Authentication complete for %s", normalized_email)
         return {"token": access_token, "user": user}
 
     current_time = now_iso()
