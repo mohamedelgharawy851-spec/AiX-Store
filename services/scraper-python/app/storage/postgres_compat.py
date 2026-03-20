@@ -190,7 +190,7 @@ class PostgresConnectionWrapper:
 
 def get_connection() -> PostgresConnectionWrapper:
     pool = _pool()
-    logging.getLogger(__name__).debug("Requesting connection from pool (size: %s)", pool.wait_count)
+    logging.getLogger(__name__).debug("Requesting connection from pool")
     conn = pool.getconn()
     logging.getLogger(__name__).debug("Obtained connection from pool")
     return PostgresConnectionWrapper(conn, pool)
