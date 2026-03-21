@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from contextlib import contextmanager
 
 import logging
 import psycopg
@@ -143,32 +144,26 @@ class PostgresConnectionWrapper:
     def rollback(self) -> None:
         self._connection.rollback()
 
-    def close(self) -> None:
-        if self._connection.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-            self._connection.rollback()
-        self._connection.close()
 
-    def __enter__(self) -> "PostgresConnectionWrapper":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        if exc_type:
-            self.rollback()
-        else:
-            self.commit()
-        self.close()
-
-
-def get_connection() -> PostgresConnectionWrapper:
+@contextmanager
+def get_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not configured")
     
-    # Supabase transaction mode (6543) is designed for single-shot connections.
-    # Opening a fresh connection per request is the standard practice here.
+    # Supabase connection should be opened fresh and closed promptly.
     conn = psycopg.connect(
         conninfo=DATABASE_URL,
         row_factory=dict_row,
         prepare_threshold=None,
         autocommit=False
     )
-    return PostgresConnectionWrapper(conn)
+    try:
+        yield PostgresConnectionWrapper(conn)
+        if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+            conn.commit()
+    except Exception:
+        if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()

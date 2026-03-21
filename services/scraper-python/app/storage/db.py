@@ -125,15 +125,26 @@ RELATED_TOKEN_STOPWORDS = {
 }
 
 
+@contextmanager
 def get_connection():
     if postgres_enabled():
-        return get_postgres_connection()
+        with get_postgres_connection() as conn:
+            yield conn
+            return
+    
     connection = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA busy_timeout=5000")
-    return connection
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def _is_locked_error(exc: Exception) -> bool:
@@ -852,7 +863,7 @@ def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
         "originalPrice": original_price,
         "currency": row["currency"],
         "rating": float(row["rating"] or 0.0),
-        "imageUrl": "",
+        "imageUrl": row["source_image_url"],
         "imageAltText": row["title"],
         "reviewCount": int(row["review_count"] or 0),
         "sourceSite": row["provider"],
@@ -926,23 +937,20 @@ def _restore_snapshot(value: str | None) -> dict[str, Any] | None:
 def favorite_product_ids_for_user(user_id: str, product_ids: list[str], connection: sqlite3.Connection | None = None) -> set[str]:
     if not user_id or not product_ids:
         return set()
-    owns_conn = connection is None
-    if owns_conn:
-        connection = get_connection()
-    try:
-        placeholders = ",".join("?" for _ in product_ids)
-        rows = connection.execute(
-            f"""
-            SELECT product_id
-            FROM user_favorites
-            WHERE user_id = ? AND product_id IN ({placeholders})
-            """,
-            [user_id, *product_ids],
-        ).fetchall()
-        return {str(row["product_id"]) for row in rows if row["product_id"]}
-    finally:
-        if owns_conn and connection:
-            connection.close()
+    if connection is None:
+        with get_connection() as conn:
+            return favorite_product_ids_for_user(user_id, product_ids, connection=conn)
+
+    placeholders = ",".join("?" for _ in product_ids)
+    rows = connection.execute(
+        f"""
+        SELECT product_id
+        FROM user_favorites
+        WHERE user_id = ? AND product_id IN ({placeholders})
+        """,
+        [user_id, *product_ids],
+    ).fetchall()
+    return {str(row["product_id"]) for row in rows if row["product_id"]}
 
 
 def annotate_products_with_favorites(
@@ -2184,14 +2192,15 @@ def get_product_with_reviews(
                 """,
                 (product_row["provider"], family_key),
             ).fetchall()
-    annotate_products_with_favorites([product], user_id, connection=connection)
-    annotate_products_with_favorites(related_products, user_id, connection=connection)
-    product["reviews"] = reviews
-    product["relatedProducts"] = _dedupe_product_list(related_products)
-    product["variantOptions"] = [
-        _variant_summary_from_row(row, product_id)
-        for row in (variant_rows or [product_row])
-    ]
+            
+            annotate_products_with_favorites([product], user_id, connection=connection)
+            annotate_products_with_favorites(related_products, user_id, connection=connection)
+            product["reviews"] = reviews
+            product["relatedProducts"] = _dedupe_product_list(related_products)
+            product["variantOptions"] = [
+                _variant_summary_from_row(row, product_id)
+                for row in (variant_rows or [product_row])
+            ]
     return product
 
 
@@ -2585,32 +2594,29 @@ def _bump_affinity(connection: sqlite3.Connection, user_id: str, affinity_type: 
 
 
 def get_top_interests(user_id: str, limit: int = 6, connection: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
-    owns_connection = connection is None
-    if owns_connection:
-        connection = get_connection()
-    try:
-        rows = connection.execute(
-            """
-            SELECT affinity_type, affinity_key, score, updated_at
-            FROM user_affinities
-            WHERE user_id = ?
-            """,
-            (user_id,),
-        ).fetchall()
-        scored = [
-            {
-                "type": row["affinity_type"],
-                "key": row["affinity_key"],
-                "score": round(_decayed_score(float(row["score"]), row["updated_at"]), 2),
-            }
-            for row in rows
-        ]
-        scored = [row for row in scored if row["score"] > 0]
-        scored.sort(key=lambda row: row["score"], reverse=True)
-        return scored[:limit]
-    finally:
-        if owns_connection and connection:
-            connection.close()
+    if connection is None:
+        with get_connection() as conn:
+            return get_top_interests(user_id, limit, connection=conn)
+
+    rows = connection.execute(
+        """
+        SELECT affinity_type, affinity_key, score, updated_at
+        FROM user_affinities
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchall()
+    scored = [
+        {
+            "type": row["affinity_type"],
+            "key": row["affinity_key"],
+            "score": round(_decayed_score(float(row["score"]), row["updated_at"]), 2),
+        }
+        for row in rows
+    ]
+    scored = [row for row in scored if row["score"] > 0]
+    scored.sort(key=lambda row: row["score"], reverse=True)
+    return scored[:limit]
 
 
 def _event_filter_clause(session_id: str | None) -> tuple[str, list[Any]]:
