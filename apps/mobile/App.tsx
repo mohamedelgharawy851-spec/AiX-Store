@@ -432,10 +432,12 @@ function SearchField({
   value,
   placeholder,
   onChangeText,
+  onSearch,
 }: {
   value: string;
   placeholder: string;
   onChangeText: (value: string) => void;
+  onSearch: () => void;
 }) {
   return (
     <View style={styles.searchBox}>
@@ -443,11 +445,18 @@ function SearchField({
       <TextInput
         autoCapitalize="none"
         onChangeText={onChangeText}
+        onSubmitEditing={onSearch}
         placeholder={placeholder}
         placeholderTextColor={colors.textMuted}
+        returnKeyType="search"
         style={styles.searchInput}
         value={value}
       />
+      {value.trim() ? (
+        <Pressable onPress={onSearch} style={styles.searchButton}>
+          <Text style={styles.searchButtonText}>Search</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -631,6 +640,7 @@ function HomeScreen({
   recommendationsHasMore,
   loadingRecommendations,
   onSearchChange,
+  onSearchSubmit,
   onCategoryPress,
   onProductPress,
   onToggleFavorite,
@@ -646,6 +656,7 @@ function HomeScreen({
   recommendationsHasMore: boolean;
   loadingRecommendations: boolean;
   onSearchChange: (value: string) => void;
+  onSearchSubmit: () => void;
   onCategoryPress: (categoryId: string) => void;
   onProductPress: (product: Product) => void;
   onToggleFavorite: (product: Product) => void;
@@ -666,7 +677,12 @@ function HomeScreen({
         </View>
       </View>
 
-      <SearchField onChangeText={onSearchChange} placeholder="Search brands, products, styles..." value={searchQuery} />
+      <SearchField
+        onChangeText={onSearchChange}
+        onSearch={onSearchSubmit}
+        placeholder="Search brands, products, styles..."
+        value={searchQuery}
+      />
 
       <ScrollView horizontal contentContainerStyle={styles.rowGap} showsHorizontalScrollIndicator={false}>
         {categories.map((category) => (
@@ -802,6 +818,7 @@ function CatalogScreen({
   loadingMore,
   error,
   onSearchChange,
+  onSearchSubmit,
   onCategoryPress,
   onClearCategory,
   onProductPress,
@@ -818,6 +835,7 @@ function CatalogScreen({
   loadingMore: boolean;
   error: string | null;
   onSearchChange: (value: string) => void;
+  onSearchSubmit: () => void;
   onCategoryPress: (categoryId: string) => void;
   onClearCategory: () => void;
   onProductPress: (product: Product) => void;
@@ -833,7 +851,12 @@ function CatalogScreen({
 
   return (
     <ScreenShell title="Marketplace" subtitle="Fast sections, live search fallback, and one-tap seller redirects.">
-      <SearchField onChangeText={onSearchChange} placeholder="Search catalog..." value={searchQuery} />
+      <SearchField
+        onChangeText={onSearchChange}
+        onSearch={onSearchSubmit}
+        placeholder="Search catalog..."
+        value={searchQuery}
+      />
 
       <ScrollView horizontal contentContainerStyle={styles.rowGap} showsHorizontalScrollIndicator={false}>
         <Pressable onPress={onClearCategory} style={[styles.filterChip, !selectedCategoryId && styles.filterChipActive]}>
@@ -866,9 +889,9 @@ function CatalogScreen({
         </View>
       ) : null}
 
-      {error ? <EmptyState body={error} title="Catalog request failed" /> : null}
-
-      {loading && !products.length ? (
+      {/* Error hidden: masks backend wake-up delays with persistent loading state */}
+      
+      {(loading || error) && !products.length ? (
         <View style={styles.grid}>
           {Array.from({ length: 6 }).map((_, index) => (
             <ProductCardSkeleton key={`catalog-skeleton-${index}`} />
@@ -1488,6 +1511,7 @@ export default function App() {
   });
   const [activeCatalogContextKey, setActiveCatalogContextKey] = useState("home");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchInputValue, setSearchInputValue] = useState("");
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [recommendations, setRecommendations] = useState<Product[]>([]);
   const [recommendationPage, setRecommendationPage] = useState(1);
@@ -2413,12 +2437,7 @@ export default function App() {
     const normalizedQuery = searchQuery.trim();
     const nextContextKey = expectedCatalogContextKey(normalizedQuery, selectedCategoryId);
     setActiveCatalogContextKey(nextContextKey);
-    const timeoutId = setTimeout(() => {
-      void loadCatalogPage(normalizedQuery, selectedCategoryId, 1);
-    }, normalizedQuery ? 350 : 0);
-    return () => {
-      clearTimeout(timeoutId);
-    };
+    void loadCatalogPage(normalizedQuery, selectedCategoryId, 1);
   }, [authState, catalogHydrated, searchQuery, selectedCategoryId]);
 
   useEffect(() => {
@@ -2445,17 +2464,20 @@ export default function App() {
   }
 
   function handleSearchChange(value: string) {
-    setSearchQuery(value);
-    if (!value.trim()) {
+    setSearchInputValue(value);
+  }
+
+  function handleSearchSubmit() {
+    const nextQuery = searchInputValue.trim();
+    setSearchQuery(nextQuery);
+    if (!nextQuery) {
       setActiveCatalogContextKey(expectedCatalogContextKey("", selectedCategoryId));
       return;
     }
-    if (value.trim()) {
-      setSelectedCategoryId(null);
-      setActiveCatalogContextKey(expectedCatalogContextKey(value, null));
-      setCurrentTab("catalog");
-      resetDetailNavigation("catalog");
-    }
+    setSelectedCategoryId(null);
+    setActiveCatalogContextKey(expectedCatalogContextKey(nextQuery, null));
+    setCurrentTab("catalog");
+    resetDetailNavigation("catalog");
   }
 
   function handleCategoryPress(categoryId: string) {
@@ -2643,10 +2665,11 @@ export default function App() {
           onClearCategory={handleClearCategory}
           onProductPress={(product) => void openProduct(product, "catalog")}
           onSearchChange={handleSearchChange}
+          onSearchSubmit={handleSearchSubmit}
           onShowMore={handleShowMoreCatalog}
           onToggleFavorite={toggleFavorite}
           products={catalogVisibleProducts}
-          searchQuery={searchQuery}
+          searchQuery={searchInputValue}
           selectedCategoryId={selectedCategoryId}
         />
       );
@@ -2696,12 +2719,13 @@ export default function App() {
         onOpenCatalog={() => openTab("catalog")}
         onProductPress={(product) => void openProduct(product, "home")}
         onSearchChange={handleSearchChange}
+        onSearchSubmit={handleSearchSubmit}
         onShowMoreRecommendations={handleShowMoreRecommendations}
         onToggleFavorite={toggleFavorite}
         recommendations={homeRecommendations}
         recommendationsHasMore={recommendationHasMore}
         recommendationsLabel={recommendationBasedOn}
-        searchQuery={searchQuery}
+        searchQuery={searchInputValue}
         trendingProducts={trendingProducts}
       />
     );
@@ -2786,8 +2810,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     flexDirection: "row",
     gap: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  searchButton: {
+    backgroundColor: colors.primary,
+    borderRadius: 14,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  searchButtonText: {
+    color: colors.onPrimary,
+    fontSize: 14,
+    fontWeight: "700",
   },
   searchInput: {
     color: colors.text,
