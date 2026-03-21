@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import jwt
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -52,10 +54,13 @@ from .storage.db import (
 from .storage.images import cache_image, prepare_image_cache_dir, resolve_image_path
 
 PORT = int(os.environ.get("PORT", 8000))
+SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if not SUPABASE_JWT_SECRET:
+        logger.error("SUPABASE_JWT_SECRET is not set. Authentication will fail.")
     initialize_database()
     prepare_image_cache_dir()
     yield
@@ -74,19 +79,38 @@ def _extract_token(authorization: str | None) -> str | None:
     return value.strip()
 
 
+def verify_supabase_jwt(token: str | None) -> str | None:
+    if not token or not SUPABASE_JWT_SECRET:
+        return None
+    try:
+        payload = jwt.decode(
+            token,
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated"
+        )
+        return str(payload.get("sub"))
+    except Exception as exc:
+        logger.debug("JWT verification failed: %s", exc)
+        return None
+
+
 def _require_user_id(authorization: str | None) -> str:
-    token = _extract_token(authorization)
-    user_id = get_user_id_by_token(token or "")
+    user_id = verify_supabase_jwt(_extract_token(authorization))
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     return user_id
 
 
 def _require_auth_context(authorization: str | None) -> dict[str, str]:
-    auth_context = get_auth_context_by_token(_extract_token(authorization) or "")
-    if not auth_context:
+    token = _extract_token(authorization)
+    user_id = verify_supabase_jwt(token)
+    if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    return auth_context
+    
+    # Generate a consistent session_id from the token to avoid DB lookup
+    session_id = hashlib.sha1((token or "").encode("utf-8")).hexdigest()[:24]
+    return {"user_id": user_id, "session_id": session_id}
 
 
 def _extract_client_session_id(value: str | None) -> str | None:
@@ -136,7 +160,7 @@ async def bootstrap_catalog(
     count: int = Query(DEFAULT_BOOTSTRAP_COUNT, ge=1, le=200),
     authorization: str | None = Header(default=None),
 ):
-    user_id = get_user_id_by_token(_extract_token(authorization) or "")
+    user_id = verify_supabase_jwt(_extract_token(authorization))
     return await job_runner.ensure_bootstrap(count, user_id=user_id)
 
 
@@ -147,7 +171,7 @@ async def catalog_products(
     category_id: str | None = Query(None, alias="category"),
     authorization: str | None = Header(default=None),
 ):
-    user_id = get_user_id_by_token(_extract_token(authorization) or "")
+    user_id = verify_supabase_jwt(_extract_token(authorization))
     if category_id:
         return await job_runner.list_category(category_id=category_id, page=page, page_size=page_size, user_id=user_id)
     return list_products(page=page, page_size=page_size, category_id=None, user_id=user_id)
@@ -161,7 +185,7 @@ async def catalog_search(
     category_id: str | None = Query(None, alias="category"),
     authorization: str | None = Header(default=None),
 ):
-    user_id = get_user_id_by_token(_extract_token(authorization) or "")
+    user_id = verify_supabase_jwt(_extract_token(authorization))
     return await job_runner.search(query=q, page=page, page_size=page_size, category_id=category_id, user_id=user_id)
 
 
@@ -235,12 +259,14 @@ async def catalog_product_detail(
     authorization: str | None = Header(default=None),
     x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
-    auth_context = get_auth_context_by_token(_extract_token(authorization) or "", touch=False)
-    user_id = str(auth_context["user_id"]) if auth_context else None
+    token = _extract_token(authorization)
+    user_id = verify_supabase_jwt(token)
+    session_id = hashlib.sha1((token or "").encode("utf-8")).hexdigest()[:24] if token else None
+    
     payload = await job_runner.get_detail(
         product_id,
         user_id=user_id,
-        session_id=_effective_session_id(x_aixstore_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, {"user_id": user_id, "session_id": session_id} if user_id and session_id else None),
     )
     if not payload:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -255,14 +281,16 @@ async def catalog_product_related(
     authorization: str | None = Header(default=None),
     x_aixstore_session: str | None = Header(default=None, alias="X-AIXStore-Session"),
 ):
-    auth_context = get_auth_context_by_token(_extract_token(authorization) or "", touch=False)
-    user_id = str(auth_context["user_id"]) if auth_context else None
+    token = _extract_token(authorization)
+    user_id = verify_supabase_jwt(token)
+    session_id = hashlib.sha1((token or "").encode("utf-8")).hexdigest()[:24] if token else None
+    
     payload = await job_runner.get_related(
         product_id,
         page=page,
         page_size=page_size,
         user_id=user_id,
-        session_id=_effective_session_id(x_aixstore_session, auth_context),
+        session_id=_effective_session_id(x_aixstore_session, {"user_id": user_id, "session_id": session_id} if user_id and session_id else None),
     )
     if not payload:
         raise HTTPException(status_code=404, detail="Product not found")
