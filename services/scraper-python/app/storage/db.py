@@ -2014,9 +2014,29 @@ def _compute_related_scores(
     product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
     if not product_row:
         return [], 0
+        
     current_category_id = str(product_row["category_id"])
     current_related_tokens = _build_related_token_set(product_row)
     strict_anchor_category = bool(current_category_id and current_category_id != "others")
+    
+    # 1. Try fetching from related_products table first (as requested)
+    rel_rows = connection.execute(
+        """
+        SELECT p.*, rp.score as table_score, rp.reason
+        FROM related_products rp
+        JOIN products p ON p.id = rp.related_product_id
+        WHERE rp.product_id = ? AND p.is_active = 1
+        ORDER BY rp.score DESC
+        """,
+        (product_id,)
+    ).fetchall()
+    
+    if rel_rows:
+        total = len(rel_rows)
+        sliced = [_row_to_product(row) for row in rel_rows[offset : offset + limit]]
+        return sliced, total
+
+    # 2. Fallback to same-category products with keyword scoring
     affinity_lookup = {}
     recent_category_bias: dict[str, float] = {}
     recent_tag_bias: dict[str, float] = {}
@@ -2026,12 +2046,15 @@ def _compute_related_scores(
         recent_category_bias = preference_context["recentCategoryBias"]
         recent_tag_bias = preference_context["recentTagBias"]
 
+    # Fetch candidates from SAME category or 'others'
+    category_filter = "AND p.category_id = ?" if strict_anchor_category else "AND (p.category_id = ? OR p.category_id = 'others')"
+    params = [product_id, product_id, current_category_id]
+    
     rows = connection.execute(
-        """
+        f"""
         SELECT p.*, (
-          CASE WHEN p.category_id = current.category_id THEN 5 ELSE 0 END +
-          COALESCE(shared.shared_queries, 0) * 3 +
-          p.rating
+          COALESCE(shared.shared_queries, 0) * 5 +
+          p.rating * 2
         ) AS base_score
         FROM products current
         CROSS JOIN products p
@@ -2048,10 +2071,11 @@ def _compute_related_scores(
           GROUP BY qp2.product_id
         ) shared ON shared.product_id = p.id
         WHERE current.id = ? AND p.id != current.id AND p.is_active = 1
-        ORDER BY p.updated_at DESC
-        LIMIT 250
+        {category_filter}
+        ORDER BY p.rating DESC, p.updated_at DESC
+        LIMIT 200
         """,
-        (product_id, product_id),
+        params,
     ).fetchall()
 
     scored: list[tuple[float, sqlite3.Row]] = []
@@ -2061,31 +2085,18 @@ def _compute_related_scores(
         shared_related_tokens = current_related_tokens & row_related_tokens
         shared_token_count = len(shared_related_tokens)
         overlap_ratio = shared_token_count / max(1, min(len(current_related_tokens), len(row_related_tokens)))
-        same_category = str(row["category_id"]) == current_category_id
-        score += shared_token_count * 4.0
-        if same_category:
-            if strict_anchor_category and shared_token_count == 0 and overlap_ratio < 0.1:
-                continue
-            if not strict_anchor_category and shared_token_count == 0 and overlap_ratio < 0.05:
-                continue
-            score += 5.0 + (overlap_ratio * 4.0)
-        elif strict_anchor_category:
-            if shared_token_count < 1 and overlap_ratio < 0.15:
-                continue
-            score -= 8.0
-            score += overlap_ratio * 2.0
-        else:
-            if shared_token_count < 1 and overlap_ratio < 0.1:
-                continue
-            score -= 10.0
-            score += overlap_ratio * 1.5
+        
+        # Keyword bonus is very strong to ensure relevance
+        score += shared_token_count * 10.0
+        score += overlap_ratio * 15.0
+        
         if user_id:
-            if same_category or not strict_anchor_category:
-                score += affinity_lookup.get(("category", str(row["category_id"])), 0.0) * 0.7
-                score += affinity_lookup.get(("brand", normalize_whitespace(row["brand"]).lower()), 0.0) * 0.35
-                score += sum(affinity_lookup.get(("tag", tag.lower()), 0.0) for tag in row_related_tokens) * 0.2
-                score += recent_category_bias.get(str(row["category_id"]).lower(), 0.0) * 0.6
-                score += sum(recent_tag_bias.get(tag.lower(), 0.0) for tag in row_related_tokens) * 0.15
+            score += affinity_lookup.get(("category", str(row["category_id"])), 0.0) * 0.7
+            score += affinity_lookup.get(("brand", normalize_whitespace(row["brand"]).lower()), 0.0) * 0.35
+            score += sum(affinity_lookup.get(("tag", tag.lower()), 0.0) for tag in row_related_tokens) * 0.2
+            score += recent_category_bias.get(str(row["category_id"]).lower(), 0.0) * 0.6
+            score += sum(recent_tag_bias.get(tag.lower(), 0.0) for tag in row_related_tokens) * 0.15
+            
         scored.append((score, row))
 
     scored.sort(key=lambda item: (item[0], float(item[1]["rating"] or 0.0), int(item[1]["review_count"] or 0)), reverse=True)
@@ -2097,6 +2108,7 @@ def _compute_related_scores(
             continue
         seen_keys.add(key)
         ranked_rows.append(row)
+        
     total = len(ranked_rows)
     sliced = [_row_to_product(row) for row in ranked_rows[offset : offset + limit]]
     return sliced, total
