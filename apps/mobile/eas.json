@@ -1,8 +1,13 @@
 {
-  "cli": { "version": ">= 10.0.0" },
+  "cli": {
+    "version": ">= 10.0.0",
+    "appVersionSource": "local"
+  },
   "build": {
     "preview": {
-      "android": { "buildType": "apk" },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_AIXSTORE_RUNTIME_URL": "https://shadypro-aixstore-runtime.hf.space"
       }
