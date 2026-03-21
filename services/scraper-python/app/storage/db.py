@@ -2056,18 +2056,18 @@ def _compute_related_scores(
         same_category = str(row["category_id"]) == current_category_id
         score += shared_token_count * 4.0
         if same_category:
-            if strict_anchor_category and shared_token_count == 0:
+            if strict_anchor_category and shared_token_count == 0 and overlap_ratio < 0.1:
                 continue
-            if not strict_anchor_category and (shared_token_count < 2 or overlap_ratio < 0.34):
+            if not strict_anchor_category and shared_token_count == 0 and overlap_ratio < 0.05:
                 continue
             score += 5.0 + (overlap_ratio * 4.0)
         elif strict_anchor_category:
-            if shared_token_count < 3 or overlap_ratio < 0.45:
+            if shared_token_count < 1 and overlap_ratio < 0.15:
                 continue
             score -= 8.0
             score += overlap_ratio * 2.0
         else:
-            if shared_token_count < 2 or overlap_ratio < 0.34:
+            if shared_token_count < 1 and overlap_ratio < 0.1:
                 continue
             score -= 10.0
             score += overlap_ratio * 1.5
@@ -2149,7 +2149,7 @@ def get_product_with_reviews(
             return None
         product = _row_to_product(product_row)
         review_rows = connection.execute(
-            "SELECT * FROM reviews WHERE product_id = ? ORDER BY COALESCE(published_at, '') DESC, id ASC LIMIT 10",
+            "SELECT * FROM reviews WHERE product_id = ? ORDER BY published_at DESC, id ASC LIMIT 10",
             (product_id,),
         ).fetchall()
         reviews = [

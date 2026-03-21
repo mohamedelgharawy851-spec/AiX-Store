@@ -39,7 +39,7 @@ TARGET_STORE_STATE = os.environ.get("AIXSTORE_TARGET_STORE_STATE", "NY")
 TARGET_STORE_LATITUDE = os.environ.get("AIXSTORE_TARGET_STORE_LATITUDE", "42.094186")
 TARGET_STORE_LONGITUDE = os.environ.get("AIXSTORE_TARGET_STORE_LONGITUDE", "-76.001181")
 TARGET_TIMEZONE = os.environ.get("AIXSTORE_TARGET_TIMEZONE", "America/New_York")
-SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
 
 CATEGORY_CONFIG: dict[str, dict[str, object]] = {
     "electronics": {

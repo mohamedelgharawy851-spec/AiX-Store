@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import jwt
+from jwt import PyJWKClient
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -53,14 +54,14 @@ from .storage.db import (
 )
 from .storage.images import cache_image, prepare_image_cache_dir, resolve_image_path
 
-PORT = int(os.environ.get("PORT", 8000))
-SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
+_jwks_client = PyJWKClient(f"{SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if not SUPABASE_JWT_SECRET:
-        logger.error("SUPABASE_JWT_SECRET is not set. Authentication will fail.")
+    if not SUPABASE_URL:
+        logger.error("SUPABASE_URL is not set. Authentication will fail.")
     initialize_database()
     prepare_image_cache_dir()
     yield
@@ -80,13 +81,14 @@ def _extract_token(authorization: str | None) -> str | None:
 
 
 def verify_supabase_jwt(token: str | None) -> str | None:
-    if not token or not SUPABASE_JWT_SECRET:
+    if not token or not SUPABASE_URL:
         return None
     try:
+        signing_key = _jwks_client.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
+            signing_key.key,
+            algorithms=["RS256", "ES256"],
             audience="authenticated"
         )
         return str(payload.get("sub"))
