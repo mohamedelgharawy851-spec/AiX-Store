@@ -14,10 +14,6 @@ from psycopg_pool import ConnectionPool
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
 
-# Auto-fix: Switch from Supavisor pooler (6543) to direct Postgres (5432) if detected on HF
-if "pooler.supabase.com:6543" in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace(":6543", ":5432")
-
 POSTGRES_SCHEMA_PATH = Path(__file__).with_name("postgres_schema.sql")
 
 REPLACE_CONFLICT_COLUMNS = {
@@ -48,11 +44,11 @@ def _pool() -> ConnectionPool:
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL is not configured")
         masked_url = re.sub(r":([^@/]+)@", ":****@", DATABASE_URL)
-        logging.getLogger(__name__).info("Initializing Postgres pool (max_size=20) with URL: %s", masked_url)
+        logging.getLogger(__name__).info("Initializing Postgres pool (max_size=3) with URL: %s", masked_url)
         _POOL = ConnectionPool(
             conninfo=DATABASE_URL,
             min_size=1,
-            max_size=20,
+            max_size=3,
             kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
         )
