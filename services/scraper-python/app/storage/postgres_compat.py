@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import os
 import re
 from pathlib import Path
@@ -9,7 +8,6 @@ from typing import Any
 import logging
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
 
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
@@ -31,40 +29,9 @@ INSERT_OR_REPLACE_PATTERN = re.compile(
 )
 NAMED_PLACEHOLDER_PATTERN = re.compile(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)")
 
-_POOL: ConnectionPool | None = None
-
 
 def postgres_enabled() -> bool:
     return bool(DATABASE_URL)
-
-
-def _pool() -> ConnectionPool:
-    global _POOL
-    if _POOL is None:
-        if not DATABASE_URL:
-            raise RuntimeError("DATABASE_URL is not configured")
-        masked_url = re.sub(r":([^@/]+)@", ":****@", DATABASE_URL)
-        logging.getLogger(__name__).info("Initializing Postgres pool (max_size=2) with URL: %s", masked_url)
-        _POOL = ConnectionPool(
-            conninfo=DATABASE_URL,
-            min_size=1,
-            max_size=2,
-            kwargs={"row_factory": dict_row, "prepare_threshold": None},
-            open=True,
-            check=ConnectionPool.check_connection,
-            reconnect_timeout=10.0,
-        )
-    return _POOL
-
-
-def _close_pool() -> None:
-    global _POOL
-    if _POOL is not None:
-        _POOL.close()
-        _POOL = None
-
-
-atexit.register(_close_pool)
 
 
 def _replace_placeholders(sql: str) -> str:
@@ -149,9 +116,8 @@ class BufferedResult:
 
 
 class PostgresConnectionWrapper:
-    def __init__(self, connection: psycopg.Connection, pool: ConnectionPool):
+    def __init__(self, connection: psycopg.Connection):
         self._connection = connection
-        self._pool = pool
 
     def execute(self, sql: str, params: Any = ()) -> BufferedResult:
         translated = translate_sql(sql)
@@ -180,7 +146,7 @@ class PostgresConnectionWrapper:
     def close(self) -> None:
         if self._connection.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
             self._connection.rollback()
-        self._pool.putconn(self._connection)
+        self._connection.close()
 
     def __enter__(self) -> "PostgresConnectionWrapper":
         return self
@@ -194,12 +160,15 @@ class PostgresConnectionWrapper:
 
 
 def get_connection() -> PostgresConnectionWrapper:
-    pool = _pool()
-    logging.getLogger(__name__).debug("Requesting connection from pool")
-    try:
-        conn = pool.getconn(timeout=10.0)
-    except Exception as exc:
-        logging.getLogger(__name__).error("Failed to obtain connection from pool after 10s: %s", exc)
-        raise
-    logging.getLogger(__name__).debug("Obtained connection from pool")
-    return PostgresConnectionWrapper(conn, pool)
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    
+    # Supabase transaction mode (6543) is designed for single-shot connections.
+    # Opening a fresh connection per request is the standard practice here.
+    conn = psycopg.connect(
+        conninfo=DATABASE_URL,
+        row_factory=dict_row,
+        prepare_threshold=None,
+        autocommit=False
+    )
+    return PostgresConnectionWrapper(conn)
