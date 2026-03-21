@@ -44,13 +44,15 @@ def _pool() -> ConnectionPool:
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL is not configured")
         masked_url = re.sub(r":([^@/]+)@", ":****@", DATABASE_URL)
-        logging.getLogger(__name__).info("Initializing Postgres pool (max_size=3) with URL: %s", masked_url)
+        logging.getLogger(__name__).info("Initializing Postgres pool (max_size=2) with URL: %s", masked_url)
         _POOL = ConnectionPool(
             conninfo=DATABASE_URL,
             min_size=1,
-            max_size=3,
+            max_size=2,
             kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
+            check=ConnectionPool.check_connection,
+            reconnect_timeout=10.0,
         )
     return _POOL
 

@@ -923,11 +923,14 @@ def _restore_snapshot(value: str | None) -> dict[str, Any] | None:
     return snapshot or None
 
 
-def favorite_product_ids_for_user(user_id: str, product_ids: list[str]) -> set[str]:
+def favorite_product_ids_for_user(user_id: str, product_ids: list[str], connection: sqlite3.Connection | None = None) -> set[str]:
     if not user_id or not product_ids:
         return set()
-    placeholders = ",".join("?" for _ in product_ids)
-    with get_connection() as connection:
+    owns_conn = connection is None
+    if owns_conn:
+        connection = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in product_ids)
         rows = connection.execute(
             f"""
             SELECT product_id
@@ -936,14 +939,19 @@ def favorite_product_ids_for_user(user_id: str, product_ids: list[str]) -> set[s
             """,
             [user_id, *product_ids],
         ).fetchall()
-    return {str(row["product_id"]) for row in rows if row["product_id"]}
+        return {str(row["product_id"]) for row in rows if row["product_id"]}
+    finally:
+        if owns_conn and connection:
+            connection.close()
 
 
-def annotate_products_with_favorites(items: list[dict[str, Any]], user_id: str | None) -> list[dict[str, Any]]:
+def annotate_products_with_favorites(
+    items: list[dict[str, Any]], user_id: str | None, connection: sqlite3.Connection | None = None
+) -> list[dict[str, Any]]:
     if not items:
         return items
     product_ids = [str(item.get("id")) for item in items if item.get("id")]
-    favorite_ids = favorite_product_ids_for_user(user_id or "", product_ids) if user_id else set()
+    favorite_ids = favorite_product_ids_for_user(user_id or "", product_ids, connection=connection) if user_id else set()
     for item in items:
         item["isFavorite"] = bool(user_id and item.get("id") and str(item.get("id")) in favorite_ids)
     return items
@@ -1657,7 +1665,7 @@ def list_products(page: int, page_size: int, category_id: str | None = None, use
         items = ordered[offset : offset + page_size]
         payload = _catalog_response(
             connection,
-            annotate_products_with_favorites(items, user_id),
+            annotate_products_with_favorites(items, user_id, connection=connection),
             total,
             page,
             page_size,
@@ -1667,7 +1675,7 @@ def list_products(page: int, page_size: int, category_id: str | None = None, use
             strict_category=bool(category_id),
             matching={"source": "category_feed" if category_id else "home", "exactMatchCount": len(items), "filteredOutCount": 0},
         )
-        payload["offers"] = annotate_products_with_favorites(payload["offers"], user_id)
+        payload["offers"] = annotate_products_with_favorites(payload["offers"], user_id, connection=connection)
         return payload
 
 
@@ -1699,6 +1707,7 @@ def list_query_products(
         items = annotate_products_with_favorites(
             [_row_to_product(row) for row in rows[offset : offset + page_size]],
             user_id,
+            connection=connection,
         )
         metadata = connection.execute("SELECT * FROM queries WHERE normalized_query = ?", (normalized_query,)).fetchone()
         metadata_dict = dict(metadata) if metadata else {}
@@ -1722,7 +1731,7 @@ def list_query_products(
             dedupe_items=False,
         )
         payload["metadata"] = metadata_dict or None
-        payload["offers"] = annotate_products_with_favorites(payload["offers"], user_id)
+        payload["offers"] = annotate_products_with_favorites(payload["offers"], user_id, connection=connection)
         return payload
 
 
@@ -1873,7 +1882,7 @@ def search_cached_products(
                 scored.append((score, row))
         scored.sort(key=lambda item: (item[0], float(item[1]["rating"] or 0.0), item[1]["updated_at"]), reverse=True)
         ranked_rows = [row for _, row in scored]
-        products = annotate_products_with_favorites([_row_to_product(row) for row in ranked_rows], user_id)
+        products = annotate_products_with_favorites([_row_to_product(row) for row in ranked_rows], user_id, connection=connection)
         offset = max(page - 1, 0) * page_size
         payload = _catalog_response(
             connection,
@@ -1894,7 +1903,7 @@ def search_cached_products(
             },
             dedupe_items=False,
         )
-        payload["offers"] = annotate_products_with_favorites(payload["offers"], user_id)
+        payload["offers"] = annotate_products_with_favorites(payload["offers"], user_id, connection=connection)
         return payload
 
 
@@ -1971,10 +1980,10 @@ def rank_product_ids_for_query(
 def get_product(product_id: str, user_id: str | None = None) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-    product = _row_to_product(row) if row else None
-    if product:
-        annotate_products_with_favorites([product], user_id)
-    return product
+        product = _row_to_product(row) if row else None
+        if product:
+            annotate_products_with_favorites([product], user_id, connection=connection)
+        return product
 
 
 def get_source_image_url(local_image_key: str) -> str | None:
@@ -2102,16 +2111,16 @@ def get_related_products(
             session_id=session_id,
             offset=offset,
         )
-    if not total and not items:
-        return None
-    annotate_products_with_favorites(items, user_id)
-    return {
-        "items": items,
-        "page": page,
-        "pageSize": page_size,
-        "hasMore": page * page_size < total,
-        "total": total,
-    }
+        if not total and not items:
+            return None
+        annotate_products_with_favorites(items, user_id, connection=connection)
+        return {
+            "items": items,
+            "page": page,
+            "pageSize": page_size,
+            "hasMore": page * page_size < total,
+            "total": total,
+        }
 
 
 def _variant_summary_from_row(row: sqlite3.Row, current_product_id: str) -> dict[str, Any]:
@@ -2175,8 +2184,8 @@ def get_product_with_reviews(
                 """,
                 (product_row["provider"], family_key),
             ).fetchall()
-    annotate_products_with_favorites([product], user_id)
-    annotate_products_with_favorites(related_products, user_id)
+    annotate_products_with_favorites([product], user_id, connection=connection)
+    annotate_products_with_favorites(related_products, user_id, connection=connection)
     product["reviews"] = reviews
     product["relatedProducts"] = _dedupe_product_list(related_products)
     product["variantOptions"] = [
@@ -3123,7 +3132,11 @@ def list_user_recommendations(user_id: str, page: int, page_size: int, session_i
             )[:3]
             if score > 0
         ]
-        items = annotate_products_with_favorites([_row_to_product(row) for row in deduped_rows[offset : offset + page_size]], user_id)
+        items = annotate_products_with_favorites(
+            [_row_to_product(row) for row in deduped_rows[offset : offset + page_size]],
+            user_id,
+            connection=connection,
+        )
         return {
             "items": items,
             "page": page,
