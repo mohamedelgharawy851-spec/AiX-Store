@@ -126,6 +126,7 @@ async function readRequestBody(request) {
 }
 
 async function fetchUpstream(pathname, { search = "", method = "GET", body, authorization, sessionId } = {}) {
+  const url = `${PYTHON_BASE_URL}${pathname}${search}`;
   const headers = {
     accept: "application/json, image/*;q=0.9, */*;q=0.8",
   };
@@ -138,11 +139,36 @@ async function fetchUpstream(pathname, { search = "", method = "GET", body, auth
   if (body) {
     headers["content-type"] = "application/json; charset=utf-8";
   }
-  return fetch(`${PYTHON_BASE_URL}${pathname}${search}`, {
+
+  const options = {
     method,
     headers,
     body,
-  });
+  };
+
+  const makeRequest = async (isRetry = false) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      return response;
+    } catch (err) {
+      const isTimeout =
+        err.name === "AbortError" || err.code === "UND_ERR_HEADERS_TIMEOUT" || (err.cause && err.cause.code === "UND_ERR_HEADERS_TIMEOUT");
+
+      if (isTimeout && !isRetry) {
+        console.warn(`Upstream timeout on ${pathname}, retrying in 3s...`);
+        await new Promise((r) => setTimeout(r, 3000));
+        return makeRequest(true);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  return makeRequest();
 }
 
 async function proxyJson(request, response, pathname, decorate, search = "") {
@@ -316,6 +342,19 @@ const server = http.createServer(async (request, response) => {
 
     sendJson(response, 404, { error: "Not found" });
   } catch (error) {
+    const isTimeout =
+      error.name === "AbortError" ||
+      error.code === "UND_ERR_HEADERS_TIMEOUT" ||
+      (error.cause && error.cause.code === "UND_ERR_HEADERS_TIMEOUT");
+
+    if (isTimeout) {
+      console.error("Upstream timeout persistent:", error);
+      sendJson(response, 503, {
+        error: "Backend is waking up, please try again in 10 seconds",
+      });
+      return;
+    }
+
     console.error("Server error handling request:", error);
     sendJson(response, 500, {
       error: "Runtime request failed",
