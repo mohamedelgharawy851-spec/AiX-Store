@@ -2901,7 +2901,15 @@ def record_user_event(
                 _bump_affinity(connection, user_id, "site", site, site_delta, current_time)
 
         connection.commit()
-    refresh_user_recommendations(user_id, session_id=session_id)
+    
+    try:
+        with get_connection() as connection:
+            event_count_row = connection.execute("SELECT COUNT(*) as count FROM user_events WHERE user_id = ?", (user_id,)).fetchone()
+            event_count = int(event_count_row["count"] if event_count_row else 0)
+            if event_count % 10 == 0:
+                refresh_user_recommendations(user_id, session_id=session_id)
+    except Exception:
+        pass  # non-critical, skip if fails
 
 
 def add_user_favorite(user_id: str, product_id: str) -> dict[str, Any]:
@@ -3080,7 +3088,6 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
             scored.append((score, reason, row))
 
         scored.sort(key=lambda item: (item[0], float(item[2]["rating"] or 0.0), int(item[2]["review_count"] or 0)), reverse=True)
-        connection.execute("DELETE FROM user_recommendations WHERE user_id = ?", (user_id,))
         seen_keys: set[str] = set()
         inserted = 0
         for score, reason, row in scored:
