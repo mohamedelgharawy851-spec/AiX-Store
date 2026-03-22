@@ -125,7 +125,24 @@ async function readRequestBody(request) {
   return Buffer.concat(chunks);
 }
 
-async function fetchUpstream(pathname, { search = "", method = "GET", body, authorization, sessionId } = {}) {
+function upstreamPolicy(pathname, method = "GET") {
+  const normalizedMethod = String(method || "GET").toUpperCase();
+  if (pathname.startsWith("/me/favorites/") && (normalizedMethod === "PUT" || normalizedMethod === "DELETE")) {
+    return { timeoutMs: 12000, retryCount: 0, kind: "favorite-mutation" };
+  }
+  if (pathname === "/me/events") {
+    return { timeoutMs: 12000, retryCount: 0, kind: "event-write" };
+  }
+  if (pathname.startsWith("/auth/")) {
+    return { timeoutMs: 20000, retryCount: 0, kind: "auth" };
+  }
+  return { timeoutMs: 25000, retryCount: 1, kind: "read" };
+}
+
+async function fetchUpstream(
+  pathname,
+  { search = "", method = "GET", body, authorization, sessionId, timeoutMs = 25000, retryCount = 1 } = {},
+) {
   const url = `${PYTHON_BASE_URL}${pathname}${search}`;
   const headers = {
     accept: "application/json, image/*;q=0.9, */*;q=0.8",
@@ -146,9 +163,9 @@ async function fetchUpstream(pathname, { search = "", method = "GET", body, auth
     body,
   };
 
-  const makeRequest = async (isRetry = false) => {
+  const makeRequest = async (attempt = 0) => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, { ...options, signal: controller.signal });
@@ -157,11 +174,17 @@ async function fetchUpstream(pathname, { search = "", method = "GET", body, auth
       const isTimeout =
         err.name === "AbortError" || err.code === "UND_ERR_HEADERS_TIMEOUT" || (err.cause && err.cause.code === "UND_ERR_HEADERS_TIMEOUT");
 
-      if (isTimeout && !isRetry) {
-        console.warn(`Upstream timeout on ${pathname}, retrying in 3s...`);
+      if (isTimeout && attempt < retryCount) {
+        console.warn(
+          `[upstream] timeout ${method} ${pathname} attempt=${attempt + 1} timeoutMs=${timeoutMs} retrying=1`,
+        );
         await new Promise((r) => setTimeout(r, 3000));
-        return makeRequest(true);
+        return makeRequest(attempt + 1);
       }
+      console.error(
+        `[upstream] failed ${method} ${pathname} attempt=${attempt + 1} timeoutMs=${timeoutMs} retryCount=${retryCount}`,
+        err,
+      );
       throw err;
     } finally {
       clearTimeout(timeoutId);
@@ -173,12 +196,18 @@ async function fetchUpstream(pathname, { search = "", method = "GET", body, auth
 
 async function proxyJson(request, response, pathname, decorate, search = "") {
   const body = request.method && !["GET", "HEAD"].includes(request.method) ? await readRequestBody(request) : null;
+  const policy = upstreamPolicy(pathname, request.method || "GET");
+  console.log(
+    `[proxy] ${request.method || "GET"} ${pathname} policy=${policy.kind} timeoutMs=${policy.timeoutMs} retries=${policy.retryCount}`,
+  );
   const upstream = await fetchUpstream(pathname, {
     search,
     method: request.method || "GET",
     body: body && body.byteLength ? body : undefined,
     authorization: request.headers.authorization,
     sessionId: request.headers["x-aixstore-session"],
+    timeoutMs: policy.timeoutMs,
+    retryCount: policy.retryCount,
   });
   const payload = await upstream.json();
   sendJson(response, upstream.status, decorate ? decorate(request, payload) : payload);

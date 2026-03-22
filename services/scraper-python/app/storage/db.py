@@ -10,6 +10,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -1766,10 +1767,38 @@ def _matches_phrase_or_token(value: str, haystack: str, haystack_tokens: set[str
     return singularize_token(normalized_value) in haystack_tokens
 
 
-def _build_related_token_set(row: sqlite3.Row) -> set[str]:
-    title = normalize_whitespace(row["title"]).lower()
-    brand_tokens = _build_search_token_set(normalize_whitespace(row["brand"]).lower())
-    tokens = _build_search_token_set(title)
+def _record_value(record: sqlite3.Row | dict[str, Any], *keys: str) -> Any:
+    if isinstance(record, dict):
+        for key in keys:
+            if key in record:
+                return record.get(key)
+        return None
+    for key in keys:
+        try:
+            return record[key]
+        except Exception:
+            continue
+    return None
+
+
+def _related_record_tags(record: sqlite3.Row | dict[str, Any]) -> list[str]:
+    if isinstance(record, dict):
+        raw_tags = record.get("tags")
+        if isinstance(raw_tags, list):
+            return [normalize_whitespace(str(tag)).lower() for tag in raw_tags if normalize_whitespace(str(tag))]
+    return [
+        normalize_whitespace(str(tag)).lower()
+        for tag in _decode_json_array(_record_value(record, "tags_json"))
+        if normalize_whitespace(str(tag))
+    ]
+
+
+def _build_related_token_set(record: sqlite3.Row | dict[str, Any]) -> set[str]:
+    title = normalize_whitespace(_record_value(record, "title", "name")).lower()
+    description = normalize_whitespace(_record_value(record, "description")).lower()
+    tags = _related_record_tags(record)
+    brand_tokens = _build_search_token_set(normalize_whitespace(_record_value(record, "brand")).lower())
+    tokens = _build_search_token_set(title, " ".join(tags), description)
     return {
         token
         for token in tokens
@@ -1779,6 +1808,107 @@ def _build_related_token_set(row: sqlite3.Row) -> set[str]:
         and not any(character.isdigit() for character in token)
         and len(token) > 2
     }
+
+
+def _related_overlap_metrics(
+    anchor_record: sqlite3.Row | dict[str, Any],
+    candidate_record: sqlite3.Row | dict[str, Any],
+) -> tuple[int, float]:
+    anchor_tokens = _build_related_token_set(anchor_record)
+    candidate_tokens = _build_related_token_set(candidate_record)
+    shared_token_count = len(anchor_tokens & candidate_tokens)
+    overlap_ratio = shared_token_count / max(1, min(len(anchor_tokens), len(candidate_tokens)))
+    return shared_token_count, overlap_ratio
+
+
+def _related_candidate_passes_threshold(
+    anchor_record: sqlite3.Row | dict[str, Any],
+    candidate_record: sqlite3.Row | dict[str, Any],
+    *,
+    shared_query_count: int = 0,
+    shared_token_count: int | None = None,
+    overlap_ratio: float | None = None,
+) -> bool:
+    anchor_provider = normalize_whitespace(_record_value(anchor_record, "provider")).lower()
+    anchor_family_key = normalize_whitespace(_record_value(anchor_record, "family_key", "familyKey"))
+    candidate_provider = normalize_whitespace(_record_value(candidate_record, "provider")).lower()
+    candidate_family_key = normalize_whitespace(_record_value(candidate_record, "family_key", "familyKey"))
+    if (
+        anchor_provider
+        and anchor_family_key
+        and candidate_provider
+        and candidate_family_key
+        and anchor_provider == candidate_provider
+        and anchor_family_key == candidate_family_key
+    ):
+        return True
+
+    if shared_token_count is None or overlap_ratio is None:
+        shared_token_count, overlap_ratio = _related_overlap_metrics(anchor_record, candidate_record)
+
+    if shared_query_count > 0:
+        return True
+
+    anchor_category_id = normalize_whitespace(_record_value(anchor_record, "category_id", "categoryId")).lower()
+    anchor_brand = normalize_whitespace(_record_value(anchor_record, "brand")).lower()
+    candidate_brand = normalize_whitespace(_record_value(candidate_record, "brand")).lower()
+    same_brand = bool(anchor_brand and candidate_brand and anchor_brand == candidate_brand)
+
+    if anchor_category_id == "others":
+        return shared_token_count >= 2 and overlap_ratio >= 0.45
+
+    if shared_token_count >= 2:
+        return True
+    if overlap_ratio >= 0.34:
+        return True
+    if same_brand and shared_token_count >= 1:
+        return True
+    return False
+
+
+def filter_related_product_candidates(anchor_product: dict[str, Any], candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not candidate or str(candidate.get("id") or "") == str(anchor_product.get("id") or ""):
+            continue
+        shared_token_count, overlap_ratio = _related_overlap_metrics(anchor_product, candidate)
+        if not _related_candidate_passes_threshold(
+            anchor_product,
+            candidate,
+            shared_token_count=shared_token_count,
+            overlap_ratio=overlap_ratio,
+        ):
+            continue
+        filtered.append(candidate)
+    return _dedupe_product_list(filtered)
+
+
+def _shared_query_count_lookup(
+    connection: sqlite3.Connection,
+    product_id: str,
+    candidate_ids: list[str],
+) -> dict[str, int]:
+    unique_candidate_ids = [candidate_id for candidate_id in dict.fromkeys(candidate_ids) if candidate_id and candidate_id != product_id]
+    if not unique_candidate_ids:
+        return {}
+    placeholders = ",".join("?" for _ in unique_candidate_ids)
+    rows = connection.execute(
+        f"""
+        SELECT qp2.product_id AS candidate_id, COUNT(DISTINCT qp1.normalized_query) AS shared_query_count
+        FROM query_products qp1
+        INNER JOIN query_products qp2
+          ON qp1.normalized_query = qp2.normalized_query
+         AND qp1.product_id != qp2.product_id
+        INNER JOIN queries q1
+          ON q1.normalized_query = qp1.normalized_query
+        WHERE qp1.product_id = ?
+          AND qp2.product_id IN ({placeholders})
+          AND COALESCE(q1.query_kind, 'search') = 'search'
+        GROUP BY qp2.product_id
+        """,
+        (product_id, *unique_candidate_ids),
+    ).fetchall()
+    return {str(row["candidate_id"]): int(row["shared_query_count"] or 0) for row in rows if row["candidate_id"]}
 
 
 def _query_specific_adjustment(normalized_query: str, haystack: str) -> tuple[float, bool]:
@@ -2032,9 +2162,27 @@ def _compute_related_scores(
     ).fetchall()
     
     if rel_rows:
-        total = len(rel_rows)
-        sliced = [_row_to_product(row) for row in rel_rows[offset : offset + limit]]
-        return sliced, total
+        shared_query_counts = _shared_query_count_lookup(
+            connection,
+            product_id,
+            [str(row["id"]) for row in rel_rows if row["id"]],
+        )
+        filtered_rel_rows: list[sqlite3.Row] = []
+        for row in rel_rows:
+            shared_token_count, overlap_ratio = _related_overlap_metrics(product_row, row)
+            if not _related_candidate_passes_threshold(
+                product_row,
+                row,
+                shared_query_count=shared_query_counts.get(str(row["id"]), 0),
+                shared_token_count=shared_token_count,
+                overlap_ratio=overlap_ratio,
+            ):
+                continue
+            filtered_rel_rows.append(row)
+        if filtered_rel_rows:
+            total = len(filtered_rel_rows)
+            sliced = [_row_to_product(row) for row in filtered_rel_rows[offset : offset + limit]]
+            return sliced, total
 
     # 2. Fallback to same-category products with keyword scoring
     affinity_lookup = {}
@@ -2077,6 +2225,11 @@ def _compute_related_scores(
         """,
         params,
     ).fetchall()
+    shared_query_counts = _shared_query_count_lookup(
+        connection,
+        product_id,
+        [str(row["id"]) for row in rows if row["id"]],
+    )
 
     scored: list[tuple[float, sqlite3.Row]] = []
     for row in rows:
@@ -2085,10 +2238,21 @@ def _compute_related_scores(
         shared_related_tokens = current_related_tokens & row_related_tokens
         shared_token_count = len(shared_related_tokens)
         overlap_ratio = shared_token_count / max(1, min(len(current_related_tokens), len(row_related_tokens)))
+        shared_query_count = shared_query_counts.get(str(row["id"]), 0)
+
+        if not _related_candidate_passes_threshold(
+            product_row,
+            row,
+            shared_query_count=shared_query_count,
+            shared_token_count=shared_token_count,
+            overlap_ratio=overlap_ratio,
+        ):
+            continue
         
         # Keyword bonus is very strong to ensure relevance
         score += shared_token_count * 10.0
         score += overlap_ratio * 15.0
+        score += shared_query_count * 6.0
         
         if user_id:
             score += affinity_lookup.get(("category", str(row["category_id"])), 0.0) * 0.7
@@ -2919,15 +3083,12 @@ def record_user_event(
                 _bump_affinity(connection, user_id, "site", site, site_delta, current_time)
 
         connection.commit()
-    
-    try:
-        with get_connection() as connection:
-            event_count_row = connection.execute("SELECT COUNT(*) as count FROM user_events WHERE user_id = ?", (user_id,)).fetchone()
-            event_count = int(event_count_row["count"] if event_count_row else 0)
-            if event_count % 10 == 0:
-                refresh_user_recommendations(user_id, session_id=session_id)
-    except Exception:
-        pass  # non-critical, skip if fails
+
+
+def invalidate_user_recommendations(user_id: str) -> None:
+    with _write_connection() as connection:
+        connection.execute("DELETE FROM user_recommendations WHERE user_id = ?", (user_id,))
+        connection.commit()
 
 
 def add_user_favorite(user_id: str, product_id: str) -> dict[str, Any]:
@@ -2956,7 +3117,7 @@ def add_user_favorite(user_id: str, product_id: str) -> dict[str, Any]:
             ),
         )
         connection.commit()
-    refresh_user_recommendations(user_id)
+    invalidate_user_recommendations(user_id)
     favorite = get_user_favorite(user_id, product_id)
     if not favorite:
         raise ValueError("Favorite could not be stored.")
@@ -2970,7 +3131,7 @@ def remove_user_favorite(user_id: str, product_id: str) -> bool:
             (user_id, product_id),
         )
         connection.commit()
-    refresh_user_recommendations(user_id)
+    invalidate_user_recommendations(user_id)
     return bool(cursor.rowcount)
 
 
@@ -3048,6 +3209,7 @@ def list_user_favorites(user_id: str, page: int, page_size: int) -> dict[str, An
 
 
 def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str | None = None) -> None:
+    started_at = time.perf_counter()
     current_time = now_iso()
     with get_connection() as connection:
         favorite_context = _build_favorite_affinities(connection, user_id)
@@ -3063,6 +3225,7 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
         dominant_category_id = _dominant_category_id(favorite_category_bias, favorite_affinities)
         if not dominant_category_id:
             dominant_category_id = _dominant_category_id(recent_category_bias, affinities)
+        cleared = connection.execute("DELETE FROM user_recommendations WHERE user_id = ?", (user_id,)).rowcount
         rows = connection.execute(
             "SELECT * FROM products WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 400"
         ).fetchall()
@@ -3124,6 +3287,13 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
             if inserted >= limit:
                 break
         connection.commit()
+    logger.info(
+        "Refreshed recommendations for user %s (cleared=%s inserted=%s duration_ms=%d)",
+        user_id,
+        cleared,
+        inserted,
+        round((time.perf_counter() - started_at) * 1000),
+    )
 
 
 def list_user_recommendations(user_id: str, page: int, page_size: int, session_id: str | None = None) -> dict[str, Any]:

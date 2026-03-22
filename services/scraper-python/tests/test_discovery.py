@@ -870,6 +870,51 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["id"], extra_id)
         self.assertEqual(payload["page"], 2)
 
+    def test_related_page_two_filters_irrelevant_expanded_items(self):
+        base_id = self._seed_product(
+            url_suffix="tennis-ball-can",
+            title="Championship Tennis Ball Can",
+            description="Pressurized tennis balls for match play",
+            category_id="sports",
+            tags=["tennis", "ball", "sports"],
+        )
+        irrelevant_id = self._seed_product(
+            url_suffix="whole-milk-gallon",
+            title="Whole Milk Gallon",
+            description="Fresh whole milk",
+            category_id="food",
+            tags=["milk", "dairy", "grocery"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        irrelevant_product = db_module.get_product(irrelevant_id)
+        assert irrelevant_product is not None
+
+        with patch.object(
+            jobs_module,
+            "get_related_products",
+            lambda *args, **kwargs: {
+                "items": [{"id": "seed-tennis-ball", "name": "Training Tennis Ball Pack", "tags": ["tennis", "ball"]}],
+                "page": 1,
+                "pageSize": 1,
+                "hasMore": False,
+                "total": 1,
+            },
+        ), patch.object(
+            jobs_module,
+            "list_query_products",
+            lambda *args, **kwargs: {
+                "items": [irrelevant_product],
+                "page": 1,
+                "pageSize": 1,
+                "hasMore": False,
+            },
+        ), patch.object(jobs_module, "get_query_metadata", lambda *args, **kwargs: {}):
+            payload = asyncio.run(runner.get_related(base_id, page=2, page_size=1))
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["items"], [])
+
     def test_related_page_one_keeps_grab_more_available_when_seed_queries_exist(self):
         base_id = self._seed_product(
             url_suffix="portable-ping-pong-table",

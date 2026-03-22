@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.providers.base import ProviderProduct, ProviderReview
 from app.storage import db as db_module
@@ -923,6 +924,142 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(removed)
         self.assertEqual(db_module.list_user_favorites(user["id"], page=1, page_size=10)["items"], [])
 
+    def test_event_writes_do_not_refresh_recommendations(self):
+        product = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-earbuds/-/A-3010",
+            canonical_source_url="https://www.target.com/p/demo-earbuds/-/A-3010",
+            title="Demo Earbuds",
+            description="Wireless earbuds for event refresh testing",
+            price=89.99,
+            currency="USD",
+            category_id="electronics",
+            category="Electronics",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-earbuds.jpg",
+            rating=4.4,
+            review_count=20,
+            tags=["earbuds", "audio"],
+        )
+        product_id = db_module.upsert_products(
+            [product],
+            {
+                product.source_image_url: {
+                    "local_image_key": "img-demo-earbuds",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                }
+            },
+        )[0]
+        auth = db_module.create_user("event-refresh@example.com", "secret123")
+        user = db_module.get_user_by_token(auth["token"])
+        assert user is not None
+
+        with patch.object(db_module, "refresh_user_recommendations") as refresh_mock:
+            db_module.record_user_event(
+                user["id"],
+                "product_view",
+                product_id=product_id,
+                session_id="session-a",
+                metadata={"originSurface": "home"},
+            )
+
+        refresh_mock.assert_not_called()
+
+    def test_favorite_mutations_invalidate_without_refresh(self):
+        primary = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-watch-primary/-/A-3011",
+            canonical_source_url="https://www.target.com/p/demo-watch-primary/-/A-3011",
+            title="Demo Watch Primary",
+            description="Primary favorite target",
+            price=199.99,
+            currency="USD",
+            category_id="electronics",
+            category="Electronics",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-watch-primary.jpg",
+            rating=4.5,
+            review_count=41,
+            tags=["watch", "electronics"],
+        )
+        secondary = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-watch-secondary/-/A-3012",
+            canonical_source_url="https://www.target.com/p/demo-watch-secondary/-/A-3012",
+            title="Demo Watch Secondary",
+            description="Secondary recommendation target",
+            price=149.99,
+            currency="USD",
+            category_id="electronics",
+            category="Electronics",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-watch-secondary.jpg",
+            rating=4.1,
+            review_count=18,
+            tags=["watch", "wearable"],
+        )
+        product_ids = db_module.upsert_products(
+            [primary, secondary],
+            {
+                primary.source_image_url: {
+                    "local_image_key": "img-demo-watch-primary",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                secondary.source_image_url: {
+                    "local_image_key": "img-demo-watch-secondary",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+        auth = db_module.create_user("favorite-invalidate@example.com", "secret123")
+        user = db_module.get_user_by_token(auth["token"])
+        assert user is not None
+
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_recommendations (user_id, product_id, score, reason, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user["id"], product_ids[1], 8.5, "Cached recommendation", db_module.now_iso()),
+            )
+            connection.commit()
+
+        with patch.object(db_module, "refresh_user_recommendations") as refresh_mock:
+            db_module.add_user_favorite(user["id"], product_ids[0])
+        refresh_mock.assert_not_called()
+
+        with db_module.get_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) AS count FROM user_recommendations WHERE user_id = ?", (user["id"],)).fetchone()["count"],
+                0,
+            )
+            connection.execute(
+                """
+                INSERT INTO user_recommendations (user_id, product_id, score, reason, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user["id"], product_ids[1], 7.2, "Cached recommendation", db_module.now_iso()),
+            )
+            connection.commit()
+
+        with patch.object(db_module, "refresh_user_recommendations") as refresh_mock:
+            removed = db_module.remove_user_favorite(user["id"], product_ids[0])
+        self.assertTrue(removed)
+        refresh_mock.assert_not_called()
+
+        with db_module.get_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) AS count FROM user_recommendations WHERE user_id = ?", (user["id"],)).fetchone()["count"],
+                0,
+            )
+
     def test_history_product_entries_include_snapshot(self):
         product = ProviderProduct(
             provider="Target",
@@ -1112,6 +1249,101 @@ class DatabaseTests(unittest.TestCase):
                 },
             },
         )
+
+        related = db_module.get_related_products(product_ids[0], page=1, page_size=10)
+
+        assert related is not None
+        self.assertEqual([item["id"] for item in related["items"]], [product_ids[1]])
+
+    def test_stored_related_rows_are_revalidated_before_return(self):
+        anchor = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/tennis-ball-can/-/A-7201",
+            canonical_source_url="https://www.target.com/p/tennis-ball-can/-/A-7201",
+            title="Championship Tennis Ball Can",
+            description="Pressurized tennis balls for match play",
+            price=14.99,
+            currency="USD",
+            category_id="sports",
+            category="Sports",
+            brand="Ace",
+            source_image_url="https://images.example.com/tennis-ball-can.jpg",
+            rating=4.8,
+            review_count=64,
+            tags=["tennis", "ball", "sports"],
+        )
+        related_ball = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/training-tennis-ball-pack/-/A-7202",
+            canonical_source_url="https://www.target.com/p/training-tennis-ball-pack/-/A-7202",
+            title="Training Tennis Ball Pack",
+            description="Durable tennis ball pack for practice sessions",
+            price=19.99,
+            currency="USD",
+            category_id="sports",
+            category="Sports",
+            brand="Ace",
+            source_image_url="https://images.example.com/training-tennis-ball-pack.jpg",
+            rating=4.3,
+            review_count=28,
+            tags=["tennis", "ball", "practice"],
+        )
+        unrelated_milk = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/whole-milk-gallon/-/A-7203",
+            canonical_source_url="https://www.target.com/p/whole-milk-gallon/-/A-7203",
+            title="Whole Milk Gallon",
+            description="Fresh whole milk",
+            price=4.99,
+            currency="USD",
+            category_id="food",
+            category="Food",
+            brand="Farm",
+            source_image_url="https://images.example.com/whole-milk-gallon.jpg",
+            rating=4.9,
+            review_count=110,
+            tags=["milk", "dairy", "grocery"],
+        )
+        product_ids = db_module.upsert_products(
+            [anchor, related_ball, unrelated_milk],
+            {
+                anchor.source_image_url: {
+                    "local_image_key": "img-tennis-ball-can",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                related_ball.source_image_url: {
+                    "local_image_key": "img-training-tennis-ball-pack",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                unrelated_milk.source_image_url: {
+                    "local_image_key": "img-whole-milk-gallon",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO related_products (product_id, related_product_id, score, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (product_ids[0], product_ids[2], 9.9, "Bad cached match"),
+            )
+            connection.execute(
+                """
+                INSERT INTO related_products (product_id, related_product_id, score, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (product_ids[0], product_ids[1], 8.1, "Good cached match"),
+            )
+            connection.commit()
 
         related = db_module.get_related_products(product_ids[0], page=1, page_size=10)
 

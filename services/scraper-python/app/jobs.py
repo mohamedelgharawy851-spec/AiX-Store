@@ -62,6 +62,7 @@ from .storage.db import (
     get_query_metadata,
     get_related_products,
     has_bootstrap_coverage,
+    filter_related_product_candidates,
     list_active_product_ids,
     list_products,
     list_query_products,
@@ -1912,8 +1913,9 @@ class CatalogJobRunner:
                 category_id=strict_category_id or None,
                 user_id=user_id,
             )
+        filtered_items = filter_related_product_candidates(product, payload.get("items", []))
         return {
-            "items": payload.get("items", []),
+            "items": filtered_items,
             "page": page,
             "pageSize": page_size,
             "hasMore": bool(payload.get("hasMore")) or self._cursor_has_more(cursor),
