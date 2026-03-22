@@ -164,6 +164,15 @@ CREATE TABLE IF NOT EXISTS public.user_recommendations (
 
 CREATE INDEX IF NOT EXISTS idx_user_recommendations_lookup ON public.user_recommendations(user_id, score DESC);
 
+CREATE TABLE IF NOT EXISTS public.featured_offer_snapshots (
+  period_key TEXT PRIMARY KEY,
+  product_ids_json JSONB NOT NULL,
+  generated_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_featured_offer_snapshots_expires ON public.featured_offer_snapshots(expires_at);
+
 CREATE TABLE IF NOT EXISTS public.ai_query_cache (
   cache_key TEXT PRIMARY KEY,
   normalized_query TEXT NOT NULL,

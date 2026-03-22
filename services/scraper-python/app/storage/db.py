@@ -124,6 +124,8 @@ RELATED_TOKEN_STOPWORDS = {
     "sports",
     "others",
 }
+FEATURED_OFFERS_LIMIT = 10
+FEATURED_OFFER_MAX_PER_CATEGORY = 2
 
 
 @contextmanager
@@ -225,6 +227,7 @@ def reset_product_linked_state(*, preserve_search_history: bool = True) -> dict[
             deleted["discovery_hits"] = _count_table_rows(connection, "discovery_hits")
             deleted["discovery_queries"] = _count_table_rows(connection, "discovery_queries")
             deleted["discovery_suppression"] = _count_table_rows(connection, "discovery_suppression")
+            deleted["featured_offer_snapshots"] = _count_table_rows(connection, "featured_offer_snapshots")
             deleted["products"] = _count_table_rows(connection, "products")
             deleted["user_favorites"] = _count_table_rows(connection, "user_favorites")
             deleted["user_recommendations"] = _count_table_rows(connection, "user_recommendations")
@@ -244,6 +247,7 @@ def reset_product_linked_state(*, preserve_search_history: bool = True) -> dict[
             connection.execute("DELETE FROM discovery_hits")
             connection.execute("DELETE FROM discovery_queries")
             connection.execute("DELETE FROM discovery_suppression")
+            connection.execute("DELETE FROM featured_offer_snapshots")
             connection.execute("DELETE FROM user_favorites")
             connection.execute("DELETE FROM user_recommendations")
             if preserve_search_history:
@@ -366,6 +370,19 @@ def _ensure_schema_migrations(connection: sqlite3.Connection) -> bool:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_user_favorites_user_created ON user_favorites(user_id, created_at DESC)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS featured_offer_snapshots (
+          period_key TEXT PRIMARY KEY,
+          product_ids_json TEXT NOT NULL,
+          generated_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_featured_offer_snapshots_expires ON featured_offer_snapshots(expires_at)"
     )
     return migrated
 
@@ -991,21 +1008,175 @@ def _build_categories(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return categories
 
 
-def _build_offers(connection: sqlite3.Connection, limit: int = 5) -> list[dict[str, Any]]:
-    rows = connection.execute(
+def _offer_snapshot_period_key(current_time: datetime | None = None) -> str:
+    return (current_time or _now_datetime()).date().isoformat()
+
+
+def _discount_percentage_from_row(row: sqlite3.Row | dict[str, Any]) -> float:
+    price_cents = int(_record_value(row, "price_cents", "priceCents") or 0)
+    original_price_cents = int(_record_value(row, "original_price_cents", "originalPriceCents") or 0)
+    if price_cents <= 0 or original_price_cents <= price_cents:
+        return 0.0
+    return ((original_price_cents - price_cents) * 100.0) / max(original_price_cents, 1)
+
+
+def _offer_recency_score(row: sqlite3.Row | dict[str, Any]) -> float:
+    reference = _parse_iso(_record_value(row, "last_verified_at", "updated_at", "lastVerifiedAt", "updatedAt"))
+    if not reference:
+        return 0.0
+    age_hours = max((_now_datetime() - reference).total_seconds() / 3600.0, 0.0)
+    return max(0.0, 1.5 - min(age_hours, 72.0) / 48.0)
+
+
+def _offer_daily_bias(period_key: str, product_id: str) -> float:
+    digest = hashlib.sha1(f"{period_key}:{product_id}".encode("utf-8")).hexdigest()
+    return (int(digest[:8], 16) % 1000) / 1000.0
+
+
+def _offer_snapshot_expiry(period_key: str) -> str:
+    expires_at = _parse_iso(f"{period_key}T00:00:00+00:00") or _now_datetime()
+    return (expires_at + timedelta(days=1)).isoformat()
+
+
+def _discounted_product_rows(connection: sqlite3.Connection, limit: int = 600) -> list[sqlite3.Row]:
+    return connection.execute(
         """
-        SELECT * FROM products
+        SELECT *
+        FROM products
         WHERE is_active = 1
           AND price_cents > 0
           AND original_price_cents IS NOT NULL
           AND original_price_cents > price_cents
           AND ((original_price_cents - price_cents) * 100.0 / original_price_cents) < 95
-        ORDER BY (original_price_cents - price_cents) DESC, rating DESC
+        ORDER BY updated_at DESC, rating DESC
         LIMIT ?
         """,
         (limit,),
     ).fetchall()
-    return [_row_to_product(row) for row in _dedupe_rows(rows)[:limit]]
+
+
+def _load_featured_offer_rows_from_ids(
+    connection: sqlite3.Connection,
+    product_ids: list[str],
+    *,
+    limit: int,
+) -> list[sqlite3.Row] | None:
+    deduped_ids = [product_id for product_id in dict.fromkeys(product_ids) if normalize_whitespace(product_id)]
+    if not deduped_ids:
+        return None
+    placeholders = ",".join("?" for _ in deduped_ids)
+    rows = connection.execute(
+        f"""
+        SELECT *
+        FROM products
+        WHERE id IN ({placeholders})
+          AND is_active = 1
+          AND price_cents > 0
+          AND original_price_cents IS NOT NULL
+          AND original_price_cents > price_cents
+          AND ((original_price_cents - price_cents) * 100.0 / original_price_cents) < 95
+        """,
+        deduped_ids,
+    ).fetchall()
+    row_by_id = {str(row["id"]): row for row in rows if row["id"]}
+    ordered_rows: list[sqlite3.Row] = []
+    for product_id in deduped_ids[:limit]:
+        row = row_by_id.get(product_id)
+        if not row:
+            return None
+        ordered_rows.append(row)
+    return ordered_rows
+
+
+def _generate_featured_offer_product_ids(connection: sqlite3.Connection, period_key: str, limit: int) -> list[str]:
+    candidates = _discounted_product_rows(connection)
+    scored: list[tuple[float, sqlite3.Row]] = []
+    for row in candidates:
+        discount_percentage = _discount_percentage_from_row(row)
+        if discount_percentage <= 0 or discount_percentage >= 95:
+            continue
+        rating_score = float(row["rating"] or 0.0) * 2.2
+        review_score = min(int(row["review_count"] or 0), 250) / 18.0
+        freshness_score = _offer_recency_score(row) * 8.0
+        confidence_score = min(float(row["category_confidence"] or 0.0), 1.0) * 2.0
+        daily_bias = _offer_daily_bias(period_key, str(row["id"]))
+        scored.append(
+            (
+                (discount_percentage * 1.45) + rating_score + review_score + freshness_score + confidence_score + daily_bias,
+                row,
+            )
+        )
+    scored.sort(key=lambda item: (item[0], float(item[1]["rating"] or 0.0), normalize_whitespace(item[1]["updated_at"])), reverse=True)
+
+    selected_ids: list[str] = []
+    category_counts: dict[str, int] = {}
+    seen_family_keys: set[str] = set()
+    for _, row in scored:
+        category_id = normalize_whitespace(row["category_id"]).lower()
+        if category_id and category_counts.get(category_id, 0) >= FEATURED_OFFER_MAX_PER_CATEGORY:
+            continue
+        family_key = normalize_whitespace(row["family_key"])
+        if family_key and family_key in seen_family_keys:
+            continue
+        selected_ids.append(str(row["id"]))
+        if category_id:
+            category_counts[category_id] = category_counts.get(category_id, 0) + 1
+        if family_key:
+            seen_family_keys.add(family_key)
+        if len(selected_ids) >= limit:
+            break
+    return selected_ids
+
+
+def _store_featured_offer_snapshot(connection: sqlite3.Connection, period_key: str, product_ids: list[str]) -> None:
+    current_time = now_iso()
+    connection.execute(
+        """
+        INSERT INTO featured_offer_snapshots (period_key, product_ids_json, generated_at, expires_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(period_key) DO UPDATE SET
+          product_ids_json = excluded.product_ids_json,
+          generated_at = excluded.generated_at,
+          expires_at = excluded.expires_at
+        """,
+        (
+            period_key,
+            json_dumps(product_ids),
+            current_time,
+            _offer_snapshot_expiry(period_key),
+        ),
+    )
+
+
+def _build_offers(connection: sqlite3.Connection, limit: int = FEATURED_OFFERS_LIMIT) -> list[dict[str, Any]]:
+    current_time = _now_datetime()
+    period_key = _offer_snapshot_period_key(current_time)
+    snapshot_row = connection.execute(
+        """
+        SELECT product_ids_json, expires_at
+        FROM featured_offer_snapshots
+        WHERE period_key = ?
+        """,
+        (period_key,),
+    ).fetchone()
+
+    if snapshot_row:
+        expires_at = _parse_iso(snapshot_row["expires_at"])
+        if expires_at and expires_at > current_time:
+            cached_rows = _load_featured_offer_rows_from_ids(
+                connection,
+                _decode_json_array(snapshot_row["product_ids_json"]),
+                limit=limit,
+            )
+            if cached_rows:
+                return [_row_to_product(row) for row in cached_rows[:limit]]
+
+    product_ids = _generate_featured_offer_product_ids(connection, period_key, limit)
+    if not product_ids:
+        return []
+    _store_featured_offer_snapshot(connection, period_key, product_ids)
+    rows = _load_featured_offer_rows_from_ids(connection, product_ids, limit=limit) or []
+    return [_row_to_product(row) for row in rows[:limit]]
 
 
 def _interleaved_products(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
@@ -1854,9 +2025,6 @@ def _related_candidate_passes_threshold(
     if shared_token_count is None or overlap_ratio is None:
         shared_token_count, overlap_ratio = _related_overlap_metrics(anchor_record, candidate_record)
 
-    if shared_query_count > 0:
-        return True
-
     anchor_category_id = normalize_whitespace(_record_value(anchor_record, "category_id", "categoryId")).lower()
     candidate_category_id = normalize_whitespace(_record_value(candidate_record, "category_id", "categoryId")).lower()
     anchor_brand = normalize_whitespace(_record_value(anchor_record, "brand")).lower()
@@ -1864,17 +2032,36 @@ def _related_candidate_passes_threshold(
     same_brand = bool(anchor_brand and candidate_brand and anchor_brand == candidate_brand)
     same_category = bool(anchor_category_id and candidate_category_id and anchor_category_id == candidate_category_id)
 
+    if shared_query_count >= 2 and shared_token_count >= 1:
+        return True
+    if shared_query_count >= 1 and same_category and shared_token_count >= 1 and overlap_ratio >= 0.3:
+        return True
+    if shared_query_count >= 1 and same_brand and shared_token_count >= 1:
+        return True
+
     if not same_category:
-        return same_brand and shared_token_count >= 2
+        if same_brand and shared_token_count >= 2 and (
+            overlap_ratio >= 0.28 or "others" in {anchor_category_id, candidate_category_id}
+        ):
+            return True
+        return False
 
     if anchor_category_id == "others":
-        return shared_token_count >= 2 and overlap_ratio >= 0.45
+        if same_brand and shared_token_count >= 2 and overlap_ratio >= 0.4:
+            return True
+        if shared_query_count >= 1 and shared_token_count >= 2:
+            return True
+        return shared_token_count >= 3 and overlap_ratio >= 0.55
 
-    if shared_token_count >= 2:
+    if shared_token_count >= 3:
         return True
-    if overlap_ratio >= 0.45:
+    if same_brand and shared_token_count >= 2:
         return True
-    if same_brand and shared_token_count >= 1:
+    if shared_token_count >= 2 and (overlap_ratio >= 0.28 or shared_query_count >= 1):
+        return True
+    if overlap_ratio >= 0.6 and shared_token_count >= 1:
+        return True
+    if same_brand and shared_token_count >= 1 and overlap_ratio >= 0.35:
         return True
     return False
 
@@ -1993,14 +2180,19 @@ def search_cached_products(
             haystack_tokens = _build_search_token_set(*haystack_parts)
             score = 0.0
             text_match = False
+            token_match_count = 0
             strong_variant_match = False
+            exact_phrase_match = False
+            query_specific_strong_match = False
             for token in tokens:
                 if singularize_token(token) in haystack_tokens:
                     score += 2.6
                     text_match = True
+                    token_match_count += 1
             if _matches_phrase_or_token(normalized_query, haystack, haystack_tokens):
                 score += 4.0
                 text_match = True
+                exact_phrase_match = True
                 exact_match_count += 1
             for variant in query_variants[1:]:
                 normalized_variant = normalize_whitespace(variant).lower()
@@ -2018,6 +2210,12 @@ def search_cached_products(
             score += query_adjustment
             if query_specific_strong_match:
                 exact_match_count += 1
+            strong_text_match = (
+                exact_phrase_match
+                or strong_variant_match
+                or query_specific_strong_match
+                or token_match_count >= min(2, len(tokens))
+            )
             category_only_match = False
             if not text_match and category_terms and normalized_query in category_terms and row["category_id"] == query_category_id:
                 score += 3.0
@@ -2027,6 +2225,10 @@ def search_cached_products(
                 category_only_match = True
             if not text_match and not category_only_match:
                 continue
+            if row["category_id"] == "others" and float(row["category_confidence"] or 0.0) < 0.45 and not strong_text_match:
+                continue
+            if query_category_id != "others" and row["category_id"] not in {query_category_id, "others"} and not strong_text_match:
+                continue
             if query_category_id != "others":
                 if row["category_id"] == query_category_id:
                     score += 2.2
@@ -2035,7 +2237,12 @@ def search_cached_products(
             score += float(row["rating"] or 0.0) * 0.35
             score += min(int(row["review_count"] or 0), 250) / 250.0
             score += min(float(row["category_confidence"] or 0.0), 8.0) * 0.4
-            if score > 0:
+            normalized_score = _normalize_search_score(score)
+            if (
+                normalized_score >= 0.22
+                or strong_text_match
+                or (category_only_match and row["category_id"] == query_category_id)
+            ):
                 scored.append((score, row))
         scored.sort(key=lambda item: (item[0], float(item[1]["rating"] or 0.0), item[1]["updated_at"]), reverse=True)
         products: list[dict[str, Any]] = []
@@ -2084,6 +2291,7 @@ def rank_product_ids_for_query(
         return [], 0, 0
     normalized_query = normalize_whitespace(query_text).lower()
     query_tokens = tokenize(normalized_query)
+    query_category_id = str(classify_category(normalized_query)["category_id"])
     query_variants = expand_query_variants(normalized_query, category_id)
     with get_connection() as connection:
         placeholders = ",".join("?" for _ in product_ids)
@@ -2110,6 +2318,7 @@ def rank_product_ids_for_query(
         haystack = " ".join(haystack_parts)
         haystack_tokens = _build_search_token_set(*haystack_parts)
         score = 0.0
+        token_match_count = 0
         strong_variant_match = False
         strong_text_match = False
         if _matches_phrase_or_token(normalized_query, haystack, haystack_tokens):
@@ -2119,6 +2328,7 @@ def rank_product_ids_for_query(
         for token in query_tokens:
             if singularize_token(token) in haystack_tokens:
                 score += 1.5
+                token_match_count += 1
         for variant in query_variants[1:]:
             if _matches_phrase_or_token(variant, haystack, haystack_tokens):
                 score += 3.2
@@ -2131,7 +2341,17 @@ def rank_product_ids_for_query(
         if query_specific_strong_match:
             exact_match_count += 1
             strong_text_match = True
+        strong_text_match = strong_text_match or token_match_count >= min(2, len(query_tokens))
+        if token_match_count <= 0 and not strong_text_match:
+            filtered_out += 1
+            continue
         if float(row["category_confidence"] or 0.0) <= 0 and row_category_id == "others" and not strong_text_match:
+            filtered_out += 1
+            continue
+        if row_category_id == "others" and float(row["category_confidence"] or 0.0) < 0.45 and not strong_text_match:
+            filtered_out += 1
+            continue
+        if query_category_id != "others" and row_category_id not in {query_category_id, "others"} and not strong_text_match:
             filtered_out += 1
             continue
         if category_id and row_category_id == category_id:
@@ -2139,6 +2359,10 @@ def rank_product_ids_for_query(
         score += min(float(row["category_confidence"] or 0.0), 8.0) * 0.6
         score += float(row["rating"] or 0.0) * 0.4
         score += min(int(row["review_count"] or 0), 200) / 200.0
+        normalized_score = _normalize_search_score(score)
+        if normalized_score < 0.24 and not strong_text_match:
+            filtered_out += 1
+            continue
         ranked.append((score, product_id))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [product_id for _, product_id in ranked], exact_match_count, filtered_out
@@ -2173,11 +2397,13 @@ def _compute_related_scores(
     product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
     if not product_row:
         return [], 0
-        
+
     current_category_id = str(product_row["category_id"])
     current_related_tokens = _build_related_token_set(product_row)
     strict_anchor_category = bool(current_category_id and current_category_id != "others")
-    
+    if not strict_anchor_category and not current_related_tokens:
+        return [], 0
+
     # 1. Try fetching from related_products table first (as requested)
     rel_rows = connection.execute(
         """
@@ -2223,10 +2449,13 @@ def _compute_related_scores(
         recent_category_bias = preference_context["recentCategoryBias"]
         recent_tag_bias = preference_context["recentTagBias"]
 
-    # Fetch candidates from SAME category or 'others'
-    category_filter = "AND p.category_id = ?" if strict_anchor_category else "AND (p.category_id = ? OR p.category_id = 'others')"
-    params = [product_id, product_id, current_category_id]
-    
+    # Fetch candidates from the same category when classification is strong.
+    # For weakly classified anchors, rely on stronger token/query overlap instead of broad category fallback.
+    category_filter = "AND p.category_id = ?" if strict_anchor_category else ""
+    params = [product_id, product_id]
+    if strict_anchor_category:
+        params.append(current_category_id)
+
     rows = connection.execute(
         f"""
         SELECT p.*, (
@@ -2277,7 +2506,7 @@ def _compute_related_scores(
             overlap_ratio=overlap_ratio,
         ):
             continue
-        
+
         # Keyword bonus is very strong to ensure relevance
         score += shared_token_count * 10.0
         score += overlap_ratio * 15.0
@@ -2972,6 +3201,120 @@ def _build_favorite_affinities(connection: sqlite3.Connection, user_id: str) -> 
     }
 
 
+def _favorite_signal_strength(
+    favorite_affinities: dict[tuple[str, str], float],
+    *,
+    category_id: str,
+    brand: str,
+    provider: str,
+    tags: list[str],
+) -> float:
+    score = 0.0
+    score += favorite_affinities.get(("category", category_id), 0.0) * 2.2
+    score += favorite_affinities.get(("brand", brand), 0.0) * 1.45
+    score += favorite_affinities.get(("site", provider), 0.0) * 0.45
+    score += sum(favorite_affinities.get(("tag", tag.lower()), 0.0) for tag in tags) * 0.9
+    return score
+
+
+def _build_history_trending_products(
+    connection: sqlite3.Connection,
+    user_id: str,
+    *,
+    limit: int = 6,
+    session_id: str | None = None,
+    exclude_ids: set[str] | None = None,
+    exclude_family_keys: set[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    event_filter, params = _event_filter_clause(session_id)
+    event_rows = connection.execute(
+        f"""
+        SELECT ue.*, p.tags_json, p.brand, p.provider, p.category_id AS product_category_id
+        FROM user_events ue
+        LEFT JOIN products p ON p.id = ue.product_id
+        WHERE ue.user_id = ?{event_filter}
+          AND ue.event_type IN ('search', 'product_view', 'source_open')
+        ORDER BY ue.created_at DESC
+        LIMIT 120
+        """,
+        [user_id, *params],
+    ).fetchall()
+    if not event_rows:
+        return []
+
+    tag_scores: dict[str, float] = {}
+    category_scores: dict[str, float] = {}
+    brand_scores: dict[str, float] = {}
+    site_scores: dict[str, float] = {}
+    viewed_ids: set[str] = set(exclude_ids or set())
+    for index, row in enumerate(event_rows):
+        recency = max(0.3, 1.0 - (index * 0.045))
+        event_type = str(row["event_type"])
+        if row["product_id"] and event_type in {"product_view", "source_open"}:
+            viewed_ids.add(str(row["product_id"]))
+        category_id = normalize_whitespace(row["category_id"] or row["product_category_id"]).lower()
+        if category_id:
+            category_scores[category_id] = category_scores.get(category_id, 0.0) + (
+                (2.2 if event_type == "product_view" else 3.1 if event_type == "source_open" else 1.4) * recency
+            )
+        if row["query_text"]:
+            for token in tokenize(str(row["query_text"])):
+                tag_scores[token] = tag_scores.get(token, 0.0) + (1.8 * recency)
+        for tag in _decode_json_array(row["tags_json"]):
+            normalized_tag = normalize_whitespace(tag).lower()
+            if normalized_tag:
+                tag_scores[normalized_tag] = tag_scores.get(normalized_tag, 0.0) + (
+                    (1.8 if event_type == "product_view" else 2.4 if event_type == "source_open" else 0.0) * recency
+                )
+        brand = normalize_whitespace(row["brand"]).lower()
+        if brand:
+            brand_scores[brand] = brand_scores.get(brand, 0.0) + (
+                (0.8 if event_type == "product_view" else 1.4 if event_type == "source_open" else 0.0) * recency
+            )
+        provider = normalize_whitespace(row["provider"]).lower()
+        if provider and event_type == "source_open":
+            site_scores[provider] = site_scores.get(provider, 0.0) + (0.7 * recency)
+
+    candidate_rows = connection.execute(
+        "SELECT * FROM products WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 400"
+    ).fetchall()
+    ranked: list[tuple[float, sqlite3.Row]] = []
+    seen_keys: set[str] = set()
+    for row in candidate_rows:
+        product_id = str(row["id"])
+        provider = normalize_whitespace(row["provider"]).lower()
+        family_key = normalize_whitespace(row["family_key"])
+        if product_id in viewed_ids:
+            continue
+        if exclude_family_keys and provider and family_key and (provider, family_key) in exclude_family_keys:
+            continue
+        tags = _decode_json_array(row["tags_json"])
+        row_category_id = normalize_whitespace(row["category_id"]).lower()
+        brand = normalize_whitespace(row["brand"]).lower()
+        category_signal = category_scores.get(row_category_id, 0.0)
+        tag_signal = sum(tag_scores.get(tag.lower(), 0.0) for tag in tags)
+        brand_signal = brand_scores.get(brand, 0.0)
+        site_signal = site_scores.get(provider, 0.0)
+        if category_signal <= 0 and tag_signal <= 0 and brand_signal <= 0 and site_signal <= 0:
+            continue
+        history_score = category_signal * 1.35
+        history_score += tag_signal * 0.55
+        history_score += brand_signal * 0.45
+        history_score += site_signal * 0.2
+        history_score += float(row["rating"] or 0.0) * 0.55
+        history_score += min(int(row["review_count"] or 0), 200) / 90.0
+        if history_score < 2.25:
+            continue
+        key = _row_identity_key(row)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        ranked.append((history_score, row))
+
+    ranked.sort(key=lambda item: (item[0], float(item[1]["rating"] or 0.0), int(item[1]["review_count"] or 0)), reverse=True)
+    return [_row_to_product(row) for _, row in ranked[:limit]]
+
+
 def record_user_event(
     user_id: str,
     event_type: str,
@@ -3251,6 +3594,7 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
         favorite_category_bias = favorite_context["categoryBias"]
         favorite_ids = favorite_context["favoriteIds"]
         favorite_family_keys = favorite_context["favoriteFamilyKeys"]
+        has_favorite_context = bool(favorite_ids or favorite_family_keys or favorite_affinities)
         dominant_category_id = _dominant_category_id(favorite_category_bias, favorite_affinities)
         if not dominant_category_id:
             dominant_category_id = _dominant_category_id(recent_category_bias, affinities)
@@ -3270,18 +3614,28 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
             if dominant_category_id and row_category_id != dominant_category_id:
                 continue
             tags = _decode_json_array(row["tags_json"])
-            score = float(row["rating"] or 0.0) * 2.0
-            score += min(int(row["review_count"] or 0), 200) / 25.0
-            score += favorite_affinities.get(("category", row_category_id), 0.0)
-            score += favorite_affinities.get(("brand", normalize_whitespace(row["brand"]).lower()), 0.0)
-            score += sum(favorite_affinities.get(("tag", tag.lower()), 0.0) for tag in tags)
-            score += favorite_affinities.get(("site", row_provider), 0.0)
+            row_brand = normalize_whitespace(row["brand"]).lower()
+            favorite_signal_score = _favorite_signal_strength(
+                favorite_affinities,
+                category_id=row_category_id,
+                brand=row_brand,
+                provider=row_provider,
+                tags=tags,
+            )
+            recent_signal_score = recent_category_bias.get(row_category_id, 0.0) + (
+                sum(recent_tag_bias.get(tag.lower(), 0.0) for tag in tags) * 0.35
+            )
+            if has_favorite_context and favorite_signal_score <= 0 and recent_signal_score <= 0:
+                continue
+
+            score = float(row["rating"] or 0.0) * 1.75
+            score += min(int(row["review_count"] or 0), 200) / 28.0
+            score += favorite_signal_score
             score += affinities.get(("category", row_category_id), 0.0) * 1.2
-            score += affinities.get(("brand", normalize_whitespace(row["brand"]).lower()), 0.0) * 0.6
+            score += affinities.get(("brand", row_brand), 0.0) * 0.55
             score += sum(affinities.get(("tag", tag.lower()), 0.0) for tag in tags) * 0.35
             score += affinities.get(("site", row_provider), 0.0) * 0.2
-            score += recent_category_bias.get(row_category_id, 0.0) * 1.0
-            score += sum(recent_tag_bias.get(tag.lower(), 0.0) for tag in tags) * 0.35
+            score += recent_signal_score
             reason = row["category"]
             if tags:
                 top_tag = max(
@@ -3295,6 +3649,8 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
                 reason = category_name(dominant_category_id)
             if row["id"] in viewed_ids:
                 score *= 0.3
+            if has_favorite_context and favorite_signal_score < 1.2 and recent_signal_score < 2.0:
+                score *= 0.55
             scored.append((score, reason, row))
 
         scored.sort(key=lambda item: (item[0], float(item[2]["rating"] or 0.0), int(item[2]["review_count"] or 0)), reverse=True)
@@ -3364,12 +3720,26 @@ def list_user_recommendations(user_id: str, page: int, page_size: int, session_i
             user_id,
             connection=connection,
         )
+        recommended_ids = {str(row["id"]) for row in deduped_rows if row["id"]}
+        trending = annotate_products_with_favorites(
+            _build_history_trending_products(
+                connection,
+                user_id,
+                limit=6,
+                session_id=session_id,
+                exclude_ids=recommended_ids | favorite_context["favoriteIds"],
+                exclude_family_keys=favorite_context["favoriteFamilyKeys"],
+            ),
+            user_id,
+            connection=connection,
+        )
         return {
             "items": items,
             "page": page,
             "pageSize": page_size,
             "hasMore": page * page_size < len(deduped_rows),
             "basedOn": based_on,
+            "trending": trending,
         }
 
 

@@ -3,6 +3,7 @@ import { fetchRuntimeJson } from "../runtime/client";
 
 export type RecommendationResponse = {
   items: Product[];
+  trending: Product[];
   page: number;
   pageSize: number;
   hasMore: boolean;

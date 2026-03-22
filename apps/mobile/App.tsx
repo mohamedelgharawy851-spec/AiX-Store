@@ -1,9 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
   LayoutChangeEvent,
   Linking,
@@ -77,6 +79,10 @@ const CATEGORY_FALLBACK_QUERIES: Record<string, string> = {
   others: "storage organizer",
 };
 const CATEGORY_PRIMARY_TIMEOUT_MS = 2500;
+const SEARCH_REQUEST_TIMEOUT_MS = 90000;
+const HOME_OFFER_LIMIT = 10;
+const OFFER_CARD_WIDTH = 260;
+const OFFER_RAIL_ITEM_WIDTH = OFFER_CARD_WIDTH + spacing.md;
 
 const defaultEnrichmentState: EnrichmentState = {
   state: "idle",
@@ -218,7 +224,7 @@ function pickOfferProducts(offers: Product[], catalogProducts: Product[]) {
   return uniqueProducts([
     ...offers.filter((product) => offerDiscount(product) > 0),
     ...catalogProducts.filter((product) => offerDiscount(product) > 0),
-  ]).slice(0, 5);
+  ]).slice(0, HOME_OFFER_LIMIT);
 }
 
 function pickDiverseProducts(products: Product[], count: number) {
@@ -390,16 +396,18 @@ function snapshotToProduct(snapshot: Record<string, unknown> | null | undefined)
 function ScreenShell({
   children,
   header,
+  scrollViewRef,
   title,
   subtitle,
 }: {
   children: ReactNode;
   header?: ReactNode;
+  scrollViewRef?: RefObject<ScrollView | null>;
   title?: string;
   subtitle?: string;
 }) {
   return (
-    <ScrollView contentContainerStyle={styles.screenContent} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.screenContent} ref={scrollViewRef} showsVerticalScrollIndicator={false}>
       {header ? (
         header
       ) : (
@@ -461,6 +469,117 @@ function SearchField({
   );
 }
 
+function PromoHeroCard({
+  onPress,
+}: {
+  onPress: () => void;
+}) {
+  const drift = useRef(new Animated.Value(0)).current;
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const driftLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(drift, {
+          duration: 5200,
+          easing: Easing.inOut(Easing.quad),
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+        Animated.timing(drift, {
+          duration: 5200,
+          easing: Easing.inOut(Easing.quad),
+          toValue: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          duration: 3600,
+          easing: Easing.inOut(Easing.sin),
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          duration: 3600,
+          easing: Easing.inOut(Easing.sin),
+          toValue: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    driftLoop.start();
+    pulseLoop.start();
+    return () => {
+      driftLoop.stop();
+      pulseLoop.stop();
+    };
+  }, [drift, pulse]);
+
+  return (
+    <View style={styles.aixHeroCard}>
+      <View pointerEvents="none" style={styles.aixHeroBackdrop}>
+        <Animated.View
+          style={[
+            styles.aixHeroWave,
+            {
+              transform: [
+                { rotate: "-14deg" },
+                { translateX: drift.interpolate({ inputRange: [0, 1], outputRange: [0, -18] }) },
+                { translateY: drift.interpolate({ inputRange: [0, 1], outputRange: [0, 10] }) },
+                { scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] }) },
+              ],
+            },
+          ]}
+        />
+        <Animated.View
+          style={[
+            styles.aixHeroOrb,
+            styles.aixHeroOrbPrimary,
+            {
+              transform: [
+                { translateX: pulse.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }) },
+                { translateY: drift.interpolate({ inputRange: [0, 1], outputRange: [0, -14] }) },
+                { scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.08] }) },
+              ],
+            },
+          ]}
+        />
+        <Animated.View
+          style={[
+            styles.aixHeroOrb,
+            styles.aixHeroOrbSecondary,
+            {
+              transform: [
+                { translateX: drift.interpolate({ inputRange: [0, 1], outputRange: [0, 12] }) },
+                { translateY: pulse.interpolate({ inputRange: [0, 1], outputRange: [0, -8] }) },
+                { scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.94] }) },
+              ],
+            },
+          ]}
+        />
+        <Animated.View
+          style={[
+            styles.aixHeroSpark,
+            {
+              opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0.85] }),
+              transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.14] }) }],
+            },
+          ]}
+        />
+      </View>
+      <Text style={styles.aixHeroEyebrow}>LIMITED TIME OFFER</Text>
+      <Text style={styles.aixHeroTitle}>Mega Summer Sale</Text>
+      <Text style={styles.aixHeroBody}>Up to 60% off on electronics, beauty, home, and more.</Text>
+      <Pressable onPress={onPress} style={styles.aixHeroButton}>
+        <Text style={styles.aixHeroButtonText}>Shop now</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function SkeletonBlock({
   height,
   width = "100%",
@@ -518,6 +637,174 @@ function ProductImage({
   );
 }
 
+function OfferCardTile({
+  product,
+  onPress,
+  onToggleFavorite,
+}: {
+  product: Product;
+  onPress: () => void;
+  onToggleFavorite: () => void;
+}) {
+  const discount = offerDiscount(product);
+
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.offerCard, pressed && styles.pressedCard]}>
+      <Pressable
+        onPress={(event) => {
+          event.stopPropagation();
+          onToggleFavorite();
+        }}
+        style={[styles.favoriteButton, styles.favoriteButtonFloating, product.isFavorite && styles.favoriteButtonActive]}
+      >
+        <Ionicons
+          color={product.isFavorite ? colors.onPrimary : colors.textMuted}
+          name={product.isFavorite ? "heart" : "heart-outline"}
+          size={16}
+        />
+      </Pressable>
+      <ProductImage
+        imageAltText={product.imageAltText}
+        imageUrl={product.imageUrl}
+        sourceImageUrl={product.sourceImageUrl}
+        style={styles.offerImage}
+      />
+      <View style={styles.offerBody}>
+        {discount > 0 ? <Text style={styles.offerDiscount}>{discount}% OFF</Text> : null}
+        <Text numberOfLines={1} style={styles.offerTitle}>
+          {product.name}
+        </Text>
+        <View style={styles.offerPriceRow}>
+          <Text style={styles.offerPrice}>${product.price.toFixed(2)}</Text>
+          {discount > 0 && product.originalPrice ? (
+            <Text style={styles.offerOriginalPrice}>${product.originalPrice.toFixed(2)}</Text>
+          ) : null}
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function AutoScrollingOfferRail({
+  offers,
+  onProductPress,
+  onToggleFavorite,
+}: {
+  offers: Product[];
+  onProductPress: (product: Product) => void;
+  onToggleFavorite: (product: Product) => void;
+}) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const animationRef = useRef<Animated.CompositeAnimation | null>(null);
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentTranslateRef = useRef(0);
+  const pausedRef = useRef(false);
+  const [paused, setPaused] = useState(false);
+  const trackWidth = offers.length * OFFER_RAIL_ITEM_WIDTH;
+  const duplicatedOffers = offers.length > 1 ? [...offers, ...offers] : offers;
+
+  useEffect(() => {
+    const listenerId = translateX.addListener(({ value }) => {
+      currentTranslateRef.current = value;
+    });
+    return () => {
+      translateX.removeListener(listenerId);
+    };
+  }, [translateX]);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  useEffect(() => {
+    return () => {
+      animationRef.current?.stop();
+      if (resumeTimerRef.current) {
+        clearTimeout(resumeTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    animationRef.current?.stop();
+    if (offers.length <= 1 || trackWidth <= 0) {
+      translateX.setValue(0);
+      currentTranslateRef.current = 0;
+      return;
+    }
+    if (paused) {
+      return;
+    }
+
+    const run = () => {
+      if (pausedRef.current) {
+        return;
+      }
+      const currentValue =
+        currentTranslateRef.current <= -trackWidth || currentTranslateRef.current > 0 ? 0 : currentTranslateRef.current;
+      const remainingDistance = Math.max(trackWidth + currentValue, 1);
+      translateX.setValue(currentValue);
+      animationRef.current = Animated.timing(translateX, {
+        duration: Math.max(16000, Math.round((remainingDistance / trackWidth) * 26000)),
+        easing: Easing.linear,
+        toValue: -trackWidth,
+        useNativeDriver: true,
+      });
+      animationRef.current.start(({ finished }) => {
+        if (!finished || pausedRef.current) {
+          return;
+        }
+        currentTranslateRef.current = 0;
+        translateX.setValue(0);
+        run();
+      });
+    };
+
+    run();
+    return () => {
+      animationRef.current?.stop();
+    };
+  }, [offers.length, paused, trackWidth, translateX]);
+
+  function pauseRail() {
+    if (resumeTimerRef.current) {
+      clearTimeout(resumeTimerRef.current);
+      resumeTimerRef.current = null;
+    }
+    setPaused(true);
+  }
+
+  function resumeRailSoon() {
+    if (resumeTimerRef.current) {
+      clearTimeout(resumeTimerRef.current);
+    }
+    resumeTimerRef.current = setTimeout(() => {
+      setPaused(false);
+    }, 1200);
+  }
+
+  return (
+    <View
+      onTouchCancel={resumeRailSoon}
+      onTouchEnd={resumeRailSoon}
+      onTouchStart={pauseRail}
+      style={styles.offerRailViewport}
+    >
+      <Animated.View style={[styles.offerRailTrack, { transform: [{ translateX }] }]}>
+        {duplicatedOffers.map((product, index) => (
+          <View key={`${product.id}:${index}`} style={styles.offerRailItem}>
+            <OfferCardTile
+              onPress={() => onProductPress(product)}
+              onToggleFavorite={() => onToggleFavorite(product)}
+              product={product}
+            />
+          </View>
+        ))}
+      </Animated.View>
+    </View>
+  );
+}
+
 function ProductCard({
   product,
   onPress,
@@ -527,6 +814,8 @@ function ProductCard({
   onPress: () => void;
   onToggleFavorite?: () => void;
 }) {
+  const discount = offerDiscount(product);
+
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.productCard, pressed && styles.pressedCard]}>
       {onToggleFavorite ? (
@@ -544,12 +833,19 @@ function ProductCard({
           />
         </Pressable>
       ) : null}
-      <ProductImage
-        imageAltText={product.imageAltText}
-        imageUrl={product.imageUrl}
-        sourceImageUrl={product.sourceImageUrl}
-        style={styles.productImage}
-      />
+      <View style={styles.productImageWrap}>
+        <ProductImage
+          imageAltText={product.imageAltText}
+          imageUrl={product.imageUrl}
+          sourceImageUrl={product.sourceImageUrl}
+          style={styles.productImage}
+        />
+        {discount > 0 ? (
+          <View style={styles.productDiscountBadge}>
+            <Text style={styles.productDiscountText}>{discount}% OFF</Text>
+          </View>
+        ) : null}
+      </View>
       <Text style={styles.productCategory}>{product.category}</Text>
       <Text numberOfLines={1} style={styles.productName}>
         {product.name}
@@ -558,7 +854,12 @@ function ProductCard({
         {product.description}
       </Text>
       <View style={styles.productMeta}>
-        <Text style={styles.productPrice}>${product.price.toFixed(2)}</Text>
+        <View style={styles.productPriceGroup}>
+          <Text style={styles.productPrice}>${product.price.toFixed(2)}</Text>
+          {discount > 0 && product.originalPrice ? (
+            <Text style={styles.productOriginalPrice}>${product.originalPrice.toFixed(2)}</Text>
+          ) : null}
+        </View>
         <View style={styles.ratingGroup}>
           <Ionicons color={colors.accent} name="star" size={14} />
           <Text style={styles.productRating}>{product.rating.toFixed(1)}</Text>
@@ -635,12 +936,9 @@ function HomeScreen({
   offers,
   recommendations,
   trendingProducts,
-  searchQuery,
   recommendationsLabel,
   recommendationsHasMore,
   loadingRecommendations,
-  onSearchChange,
-  onSearchSubmit,
   onCategoryPress,
   onProductPress,
   onToggleFavorite,
@@ -651,12 +949,9 @@ function HomeScreen({
   offers: Product[];
   recommendations: Product[];
   trendingProducts: Product[];
-  searchQuery: string;
   recommendationsLabel: string[];
   recommendationsHasMore: boolean;
   loadingRecommendations: boolean;
-  onSearchChange: (value: string) => void;
-  onSearchSubmit: () => void;
   onCategoryPress: (categoryId: string) => void;
   onProductPress: (product: Product) => void;
   onToggleFavorite: (product: Product) => void;
@@ -677,12 +972,7 @@ function HomeScreen({
         </View>
       </View>
 
-      <SearchField
-        onChangeText={onSearchChange}
-        onSearch={onSearchSubmit}
-        placeholder="Search brands, products, styles..."
-        value={searchQuery}
-      />
+      <PromoHeroCard onPress={onOpenCatalog} />
 
       <ScrollView horizontal contentContainerStyle={styles.rowGap} showsHorizontalScrollIndicator={false}>
         {categories.map((category) => (
@@ -699,15 +989,6 @@ function HomeScreen({
         ))}
       </ScrollView>
 
-      <View style={styles.aixHeroCard}>
-        <Text style={styles.aixHeroEyebrow}>LIMITED TIME OFFER</Text>
-        <Text style={styles.aixHeroTitle}>Mega Summer Sale</Text>
-        <Text style={styles.aixHeroBody}>Up to 60% off on electronics, beauty, home, and more.</Text>
-        <Pressable onPress={onOpenCatalog} style={styles.aixHeroButton}>
-          <Text style={styles.aixHeroButtonText}>Shop now</Text>
-        </Pressable>
-      </View>
-
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Offers</Text>
         <Pressable onPress={onOpenCatalog}>
@@ -715,45 +996,7 @@ function HomeScreen({
         </Pressable>
       </View>
 
-      <ScrollView horizontal contentContainerStyle={styles.rowGap} showsHorizontalScrollIndicator={false}>
-        {offers.map((product) => {
-          const discount = offerDiscount(product);
-          return (
-            <Pressable
-              key={product.id}
-              onPress={() => onProductPress(product)}
-              style={({ pressed }) => [styles.offerCard, pressed && styles.pressedCard]}
-            >
-              <Pressable
-                onPress={(event) => {
-                  event.stopPropagation();
-                  onToggleFavorite(product);
-                }}
-                style={[styles.favoriteButton, styles.favoriteButtonFloating, product.isFavorite && styles.favoriteButtonActive]}
-              >
-                <Ionicons
-                  color={product.isFavorite ? colors.onPrimary : colors.textMuted}
-                  name={product.isFavorite ? "heart" : "heart-outline"}
-                  size={16}
-                />
-              </Pressable>
-              <ProductImage
-                imageAltText={product.imageAltText}
-                imageUrl={product.imageUrl}
-                sourceImageUrl={product.sourceImageUrl}
-                style={styles.offerImage}
-              />
-              <View style={styles.offerBody}>
-                {discount > 0 ? <Text style={styles.offerDiscount}>{discount}% OFF</Text> : null}
-                <Text numberOfLines={1} style={styles.offerTitle}>
-                  {product.name}
-                </Text>
-                <Text style={styles.offerPrice}>${product.price.toFixed(2)}</Text>
-              </View>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      <AutoScrollingOfferRail offers={offers} onProductPress={onProductPress} onToggleFavorite={onToggleFavorite} />
 
       <View style={styles.sectionHeader}>
         <View>
@@ -791,19 +1034,23 @@ function HomeScreen({
         />
       )}
 
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Trending in your interests</Text>
-      </View>
-      <View style={styles.grid}>
-        {trendingProducts.map((product) => (
-          <ProductCard
-            key={`trend-${product.id}`}
-            onPress={() => onProductPress(product)}
-            onToggleFavorite={() => onToggleFavorite(product)}
-            product={product}
-          />
-        ))}
-      </View>
+      {trendingProducts.length ? (
+        <>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Inspired by your recent activity</Text>
+          </View>
+          <View style={styles.grid}>
+            {trendingProducts.map((product) => (
+              <ProductCard
+                key={`trend-${product.id}`}
+                onPress={() => onProductPress(product)}
+                onToggleFavorite={() => onToggleFavorite(product)}
+                product={product}
+              />
+            ))}
+          </View>
+        </>
+      ) : null}
     </ScreenShell>
   );
 }
@@ -816,6 +1063,7 @@ function CatalogScreen({
   enrichment,
   loading,
   loadingMore,
+  scrollToTopSignal,
   error,
   onSearchChange,
   onSearchSubmit,
@@ -833,6 +1081,7 @@ function CatalogScreen({
   enrichment: EnrichmentState;
   loading: boolean;
   loadingMore: boolean;
+  scrollToTopSignal: number;
   error: string | null;
   onSearchChange: (value: string) => void;
   onSearchSubmit: () => void;
@@ -843,14 +1092,26 @@ function CatalogScreen({
   onShowMore: () => void;
   hasMore: boolean;
 }) {
+  const scrollViewRef = useRef<ScrollView | null>(null);
   const emptyTitle = searchQuery.trim()
     ? enrichment.state === "running"
       ? "Finding the closest matches from live stores..."
       : "No products matched this search yet."
     : "We’re fetching more in this section.";
 
+  useEffect(() => {
+    if (scrollToTopSignal <= 0) {
+      return;
+    }
+    scrollViewRef.current?.scrollTo({ animated: true, y: 0 });
+  }, [scrollToTopSignal]);
+
   return (
-    <ScreenShell title="Marketplace" subtitle="Fast sections, live search fallback, and one-tap seller redirects.">
+    <ScreenShell
+      scrollViewRef={scrollViewRef}
+      title="Marketplace"
+      subtitle="Fast sections, live search fallback, and one-tap seller redirects."
+    >
       <SearchField
         onChangeText={onSearchChange}
         onSearch={onSearchSubmit}
@@ -1011,7 +1272,17 @@ function ProductDetailScreen({
       <Text style={styles.detailTitle}>{product.name}</Text>
 
       <View style={styles.detailMetaRow}>
-        <Text style={styles.detailPrice}>${product.price.toFixed(2)}</Text>
+        <View style={styles.detailPriceWrap}>
+          <Text style={styles.detailPrice}>${product.price.toFixed(2)}</Text>
+          {offerDiscount(product) > 0 && product.originalPrice ? (
+            <>
+              <Text style={styles.detailOriginalPrice}>${product.originalPrice.toFixed(2)}</Text>
+              <View style={styles.detailDiscountPill}>
+                <Text style={styles.productDiscountText}>{offerDiscount(product)}% OFF</Text>
+              </View>
+            </>
+          ) : null}
+        </View>
         <View style={styles.ratingGroup}>
           <Ionicons color={colors.accent} name="star" size={16} />
           <Text style={styles.productRating}>{product.rating.toFixed(1)}</Text>
@@ -1091,6 +1362,11 @@ function ProductDetailScreen({
                 onPress={() => onProductPress(relatedProduct)}
                 style={({ pressed }) => [styles.relatedCard, pressed && styles.pressedCard]}
               >
+                {offerDiscount(relatedProduct) > 0 ? (
+                  <View style={styles.relatedDiscountBadge}>
+                    <Text style={styles.productDiscountText}>{offerDiscount(relatedProduct)}% OFF</Text>
+                  </View>
+                ) : null}
                 <Pressable
                   onPress={(event) => {
                     event.stopPropagation();
@@ -1113,7 +1389,12 @@ function ProductDetailScreen({
                 <Text numberOfLines={1} style={styles.relatedTitle}>
                   {relatedProduct.name}
                 </Text>
-                <Text style={styles.relatedPrice}>${relatedProduct.price.toFixed(2)}</Text>
+                <View style={styles.relatedPriceRow}>
+                  <Text style={styles.relatedPrice}>${relatedProduct.price.toFixed(2)}</Text>
+                  {offerDiscount(relatedProduct) > 0 && relatedProduct.originalPrice ? (
+                    <Text style={styles.relatedOriginalPrice}>${relatedProduct.originalPrice.toFixed(2)}</Text>
+                  ) : null}
+                </View>
               </Pressable>
             ))}
           </ScrollView>
@@ -1300,6 +1581,11 @@ function ProfileScreen({
                   onPress={() => onOpenProduct(product)}
                   style={({ pressed }) => [styles.relatedCard, pressed && styles.pressedCard]}
                 >
+                  {offerDiscount(product) > 0 ? (
+                    <View style={styles.relatedDiscountBadge}>
+                      <Text style={styles.productDiscountText}>{offerDiscount(product)}% OFF</Text>
+                    </View>
+                  ) : null}
                   <Pressable
                     onPress={(event) => {
                       event.stopPropagation();
@@ -1322,7 +1608,12 @@ function ProfileScreen({
                   <Text numberOfLines={1} style={styles.relatedTitle}>
                     {product.name}
                   </Text>
-                  <Text style={styles.relatedPrice}>${product.price.toFixed(2)}</Text>
+                  <View style={styles.relatedPriceRow}>
+                    <Text style={styles.relatedPrice}>${product.price.toFixed(2)}</Text>
+                    {offerDiscount(product) > 0 && product.originalPrice ? (
+                      <Text style={styles.relatedOriginalPrice}>${product.originalPrice.toFixed(2)}</Text>
+                    ) : null}
+                  </View>
                 </Pressable>
               ))}
             </ScrollView>
@@ -1513,7 +1804,9 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchInputValue, setSearchInputValue] = useState("");
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [catalogScrollToTopSignal, setCatalogScrollToTopSignal] = useState(0);
   const [recommendations, setRecommendations] = useState<Product[]>([]);
+  const [homeTrendingProducts, setHomeTrendingProducts] = useState<Product[]>([]);
   const [recommendationPage, setRecommendationPage] = useState(1);
   const [recommendationHasMore, setRecommendationHasMore] = useState(false);
   const [recommendationBasedOn, setRecommendationBasedOn] = useState<string[]>([]);
@@ -1571,8 +1864,8 @@ export default function App() {
     activeCatalogContext.contextKey === "home"
       ? pickDiverseProducts(activeCatalogContext.items, activeCatalogContext.items.length)
       : activeCatalogContext.items;
-  const homeRecommendations = pickDiverseProducts(recommendations, Math.min(4, recommendations.length));
-  const trendingProducts = pickDiverseProducts(activeCatalogContext.items, 4);
+  const homeRecommendations = recommendations.slice(0, 6);
+  const trendingProducts = homeTrendingProducts;
 
   function isFavoriteProduct(product: Product | null | undefined) {
     if (!product?.id) {
@@ -1615,6 +1908,7 @@ export default function App() {
       isFavorite ? current : current.filter((product) => product.id !== productId)
     );
     setRecommendations((current) => markProductsFavoriteState(current, isFavorite, productId));
+    setHomeTrendingProducts((current) => markProductsFavoriteState(current, isFavorite, productId));
     setRelatedProducts((current) => markProductsFavoriteState(current, isFavorite, productId));
     setOfferProducts((current) => markProductsFavoriteState(current, isFavorite, productId));
     setSelectedProductSummary((current) => (current?.id === productId ? { ...current, isFavorite } : current));
@@ -1671,6 +1965,7 @@ export default function App() {
     relatedCacheRef.current.clear();
     detailCacheRef.current.clear();
     setRecommendations([]);
+    setHomeTrendingProducts([]);
     setRecommendationPage(1);
     setRecommendationHasMore(false);
     setRecommendationBasedOn([]);
@@ -1730,8 +2025,9 @@ export default function App() {
     const key = recommendationCacheKey(currentUser.id, page);
     const cached = recommendationsCacheRef.current.get(key);
     if (page === 1 && cached) {
-      mergeFavoriteIds(cached.items);
+      mergeFavoriteIds([...cached.items, ...(cached.trending || [])]);
       setRecommendations(cached.items);
+      setHomeTrendingProducts(cached.trending || []);
       setRecommendationPage(cached.page);
       setRecommendationHasMore(cached.hasMore);
       setRecommendationBasedOn(cached.basedOn);
@@ -1760,10 +2056,13 @@ export default function App() {
         return;
       }
       recommendationsCacheRef.current.set(key, payload);
-      mergeFavoriteIds(payload.items);
+      mergeFavoriteIds([...payload.items, ...(payload.trending || [])]);
       setRecommendationBasedOn(payload.basedOn);
       setRecommendationHasMore(payload.hasMore);
       setRecommendationPage(payload.page);
+      if (!append) {
+        setHomeTrendingProducts(payload.trending || []);
+      }
       setRecommendations((current) => (append ? uniqueProducts([...current, ...payload.items]) : payload.items));
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "AbortError") {
@@ -1958,6 +2257,9 @@ export default function App() {
         enrichment: cached.enrichment,
         loadedPages: [cached.page],
       }));
+      if (contextType === "search") {
+        setCatalogScrollToTopSignal((current) => current + 1);
+      }
     }
 
     setCatalogContextState(expectedContextKey, (current) => ({
@@ -1987,6 +2289,7 @@ export default function App() {
             pageSize: catalogPageSize,
             token: sessionToken,
             signal: controller.signal,
+            timeoutMs: SEARCH_REQUEST_TIMEOUT_MS,
           })
         : listCatalog({
             categoryId,
@@ -2037,6 +2340,9 @@ export default function App() {
           loadedPages: append ? Array.from(new Set([...current.loadedPages, payload.page])) : [payload.page],
         };
       });
+      if (!append && payload.contextType === "search") {
+        setCatalogScrollToTopSignal((current) => current + 1);
+      }
 
       if (normalizedQuery && sessionToken && page === 1 && lastLoggedSearchRef.current !== normalizedQuery.toLowerCase()) {
         lastLoggedSearchRef.current = normalizedQuery.toLowerCase();
@@ -2637,7 +2943,7 @@ export default function App() {
           onSelectVariant={selectProductVariant}
           onToggleFavorite={toggleFavorite}
           product={selectedProduct}
-          relatedProducts={pickDiverseProducts(selectedProductDetail?.relatedProducts ?? [], 6)}
+          relatedProducts={(selectedProductDetail?.relatedProducts ?? []).slice(0, 6)}
           reviews={selectedProductDetail?.reviews ?? []}
           variantOptions={selectedProductDetail?.variantOptions ?? []}
         />
@@ -2676,6 +2982,7 @@ export default function App() {
           onShowMore={handleShowMoreCatalog}
           onToggleFavorite={toggleFavorite}
           products={catalogVisibleProducts}
+          scrollToTopSignal={catalogScrollToTopSignal}
           searchQuery={searchInputValue}
           selectedCategoryId={selectedCategoryId}
         />
@@ -2725,14 +3032,11 @@ export default function App() {
         onCategoryPress={handleCategoryPress}
         onOpenCatalog={() => openTab("catalog")}
         onProductPress={(product) => void openProduct(product, "home")}
-        onSearchChange={handleSearchChange}
-        onSearchSubmit={handleSearchSubmit}
         onShowMoreRecommendations={handleShowMoreRecommendations}
         onToggleFavorite={toggleFavorite}
         recommendations={homeRecommendations}
         recommendationsHasMore={recommendationHasMore}
         recommendationsLabel={recommendationBasedOn}
-        searchQuery={searchInputValue}
         trendingProducts={trendingProducts}
       />
     );
@@ -2883,18 +3187,30 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     overflow: "hidden",
-    width: 260,
+    width: OFFER_CARD_WIDTH,
   },
   offerImage: {
     backgroundColor: colors.surfaceAlt,
     height: 160,
     width: "100%",
   },
+  offerRailViewport: {
+    marginHorizontal: -spacing.lg,
+    overflow: "hidden",
+    paddingHorizontal: spacing.lg,
+  },
+  offerRailTrack: {
+    flexDirection: "row",
+  },
+  offerRailItem: {
+    marginRight: spacing.md,
+    width: OFFER_CARD_WIDTH,
+  },
   offerBody: {
     padding: spacing.md,
   },
   offerDiscount: {
-    color: colors.primary,
+    color: "#0F7A5D",
     fontSize: 12,
     fontWeight: "800",
     marginBottom: 4,
@@ -2909,6 +3225,17 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     fontWeight: "700",
+  },
+  offerPriceRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  offerOriginalPrice: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: "600",
+    textDecorationLine: "line-through",
   },
   grid: {
     flexDirection: "row",
@@ -2927,8 +3254,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceAlt,
     borderRadius: 18,
     height: 160,
-    marginBottom: spacing.sm,
     width: "100%",
+  },
+  productImageWrap: {
+    marginBottom: spacing.sm,
+    position: "relative",
+  },
+  productDiscountBadge: {
+    backgroundColor: "#0F7A5D",
+    borderRadius: 999,
+    left: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    position: "absolute",
+    top: spacing.sm,
+  },
+  productDiscountText: {
+    color: colors.onPrimary,
+    fontSize: 11,
+    fontWeight: "800",
   },
   productCategory: {
     color: colors.textMuted,
@@ -2954,6 +3298,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
+  productPriceGroup: {
+    gap: 4,
+  },
   ratingGroup: {
     alignItems: "center",
     flexDirection: "row",
@@ -2968,6 +3315,12 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 13,
     fontWeight: "700",
+  },
+  productOriginalPrice: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "600",
+    textDecorationLine: "line-through",
   },
   skeletonBlock: {
     backgroundColor: colors.surfaceAlt,
@@ -3126,10 +3479,28 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
+  detailPriceWrap: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+  },
   detailPrice: {
     color: colors.primary,
     fontSize: 24,
     fontWeight: "800",
+  },
+  detailOriginalPrice: {
+    color: colors.textMuted,
+    fontSize: 14,
+    fontWeight: "700",
+    textDecorationLine: "line-through",
+  },
+  detailDiscountPill: {
+    backgroundColor: "#0F7A5D",
+    borderRadius: 999,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
   },
   detailDescription: {
     color: colors.textMuted,
@@ -3209,10 +3580,32 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 4,
   },
+  relatedPriceRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+  },
   relatedPrice: {
     color: colors.primary,
     fontSize: 14,
     fontWeight: "800",
+  },
+  relatedOriginalPrice: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "600",
+    textDecorationLine: "line-through",
+  },
+  relatedDiscountBadge: {
+    backgroundColor: "#0F7A5D",
+    borderRadius: 999,
+    left: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    position: "absolute",
+    top: spacing.sm,
+    zIndex: 2,
   },
   relatedHeader: {
     gap: spacing.sm,
@@ -3452,38 +3845,86 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   aixHeroCard: {
-    backgroundColor: "#1D4ED8",
-    borderRadius: 28,
+    backgroundColor: "#0D5A49",
+    borderRadius: 32,
+    borderWidth: 1,
+    borderColor: "rgba(217,255,244,0.12)",
     gap: spacing.sm,
+    overflow: "hidden",
     padding: spacing.lg,
+    position: "relative",
+  },
+  aixHeroBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  aixHeroWave: {
+    backgroundColor: "rgba(158,247,214,0.22)",
+    borderRadius: 48,
+    height: 220,
+    position: "absolute",
+    right: -36,
+    top: -62,
+    width: 260,
+  },
+  aixHeroOrb: {
+    borderRadius: 999,
+    position: "absolute",
+  },
+  aixHeroOrbPrimary: {
+    backgroundColor: "rgba(229,255,248,0.18)",
+    height: 128,
+    left: -18,
+    top: 112,
+    width: 128,
+  },
+  aixHeroOrbSecondary: {
+    backgroundColor: "rgba(110,231,183,0.18)",
+    height: 86,
+    right: 36,
+    top: 118,
+    width: 86,
+  },
+  aixHeroSpark: {
+    backgroundColor: "rgba(226,255,246,0.62)",
+    borderRadius: 999,
+    height: 22,
+    position: "absolute",
+    right: 92,
+    top: 34,
+    width: 22,
   },
   aixHeroEyebrow: {
-    color: "rgba(255,255,255,0.72)",
+    color: "rgba(236,255,249,0.74)",
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 1.1,
+    zIndex: 1,
   },
   aixHeroTitle: {
     color: colors.onPrimary,
     fontSize: 28,
     fontWeight: "900",
+    zIndex: 1,
   },
   aixHeroBody: {
-    color: "rgba(255,255,255,0.86)",
+    color: "rgba(239,255,250,0.88)",
     fontSize: 14,
     lineHeight: 20,
+    maxWidth: "76%",
+    zIndex: 1,
   },
   aixHeroButton: {
     alignItems: "center",
     alignSelf: "flex-start",
-    backgroundColor: colors.onPrimary,
+    backgroundColor: "#D9FFF4",
     borderRadius: 16,
     marginTop: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
+    zIndex: 1,
   },
   aixHeroButtonText: {
-    color: colors.primary,
+    color: "#0D5A49",
     fontSize: 14,
     fontWeight: "800",
   },

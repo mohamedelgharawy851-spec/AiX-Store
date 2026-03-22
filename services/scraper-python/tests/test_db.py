@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -723,6 +724,220 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(recommendations["items"])
         self.assertEqual(recommendations["items"][0]["categoryId"], "food")
         self.assertNotIn(product_ids[0], [item["id"] for item in recommendations["items"]])
+
+    def test_daily_featured_offers_are_cached_and_regenerated_for_inactive_products(self):
+        categories = ["electronics", "beauty", "home", "food", "fashion"]
+        products: list[ProviderProduct] = []
+        image_meta_by_url: dict[str, dict[str, object]] = {}
+        for index in range(12):
+            category_id = categories[index % len(categories)]
+            product = ProviderProduct(
+                provider="Target",
+                source_url=f"https://www.target.com/p/daily-offer-{index}/-/A-{8000 + index}",
+                canonical_source_url=f"https://www.target.com/p/daily-offer-{index}/-/A-{8000 + index}",
+                title=f"Daily Offer Product {index}",
+                description=f"Discounted product {index} for featured offers",
+                price=49.99 + index,
+                original_price=89.99 + (index * 2),
+                currency="USD",
+                category_id=category_id,
+                category=db_module.category_name(category_id),
+                brand=f"OfferBrand{index % 4}",
+                source_image_url=f"https://images.example.com/daily-offer-{index}.jpg",
+                rating=4.1 + ((index % 4) * 0.2),
+                review_count=20 + (index * 5),
+                tags=["offer", category_id, f"deal-{index}"],
+            )
+            products.append(product)
+            image_meta_by_url[product.source_image_url] = {
+                "local_image_key": f"img-daily-offer-{index}",
+                "image_mime": "image/jpeg",
+                "image_width": 640,
+                "image_height": 640,
+            }
+
+        db_module.upsert_products(products, image_meta_by_url)
+
+        fixed_now = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
+        with patch.object(db_module, "_now_datetime", return_value=fixed_now):
+            first_payload = db_module.list_products(page=1, page_size=30)
+            second_payload = db_module.list_products(page=1, page_size=30)
+
+        first_offer_ids = [item["id"] for item in first_payload["offers"]]
+        second_offer_ids = [item["id"] for item in second_payload["offers"]]
+
+        self.assertEqual(first_offer_ids, second_offer_ids)
+        self.assertLessEqual(len(first_offer_ids), 10)
+        self.assertTrue(all(item["originalPrice"] and item["originalPrice"] > item["price"] for item in first_payload["offers"]))
+
+        category_counts: dict[str, int] = {}
+        for item in first_payload["offers"]:
+            category_counts[item["categoryId"]] = category_counts.get(item["categoryId"], 0) + 1
+        self.assertTrue(all(count <= 2 for count in category_counts.values()))
+
+        with db_module.get_connection() as connection:
+            snapshot_count = connection.execute("SELECT COUNT(*) AS count FROM featured_offer_snapshots").fetchone()["count"]
+            self.assertEqual(snapshot_count, 1)
+            connection.execute("UPDATE products SET is_active = 0 WHERE id = ?", (first_offer_ids[0],))
+            connection.commit()
+
+        with patch.object(db_module, "_now_datetime", return_value=fixed_now):
+            refreshed_payload = db_module.list_products(page=1, page_size=30)
+
+        refreshed_offer_ids = [item["id"] for item in refreshed_payload["offers"]]
+        self.assertNotIn(first_offer_ids[0], refreshed_offer_ids)
+
+    def test_history_trending_products_follow_recent_activity(self):
+        viewed_blender = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-blender/-/A-8101",
+            canonical_source_url="https://www.target.com/p/demo-blender/-/A-8101",
+            title="Countertop Blender",
+            description="Kitchen blender for smoothies and frozen drinks",
+            price=89.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="BlendCo",
+            source_image_url="https://images.example.com/demo-blender.jpg",
+            rating=4.5,
+            review_count=60,
+            tags=["blender", "kitchen", "smoothie"],
+        )
+        top_recommendation = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/pro-performance-blender/-/A-8102",
+            canonical_source_url="https://www.target.com/p/pro-performance-blender/-/A-8102",
+            title="Pro Performance Blender",
+            description="High-power kitchen blender with smoothie presets",
+            price=129.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="BlendCo",
+            source_image_url="https://images.example.com/pro-performance-blender.jpg",
+            rating=4.9,
+            review_count=180,
+            tags=["blender", "kitchen", "smoothie"],
+        )
+        trending_candidate = ProviderProduct(
+            provider="Walmart",
+            source_url="https://www.walmart.com/ip/blender-travel-cup/8103",
+            canonical_source_url="https://www.walmart.com/ip/blender-travel-cup/8103",
+            title="Blender Travel Cup Set",
+            description="Portable smoothie cup set for blender owners",
+            price=24.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="BlendCo",
+            source_image_url="https://images.example.com/blender-travel-cup.jpg",
+            rating=4.4,
+            review_count=48,
+            tags=["blender", "smoothie", "cup"],
+        )
+        unrelated_tennis_ball = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/tennis-ball-can/-/A-8104",
+            canonical_source_url="https://www.target.com/p/tennis-ball-can/-/A-8104",
+            title="Championship Tennis Ball Can",
+            description="Pressurized tennis balls for match play",
+            price=14.99,
+            currency="USD",
+            category_id="sports",
+            category="Sports",
+            brand="Ace",
+            source_image_url="https://images.example.com/tennis-ball-can.jpg",
+            rating=4.8,
+            review_count=64,
+            tags=["tennis", "ball", "sports"],
+        )
+        product_ids = db_module.upsert_products(
+            [viewed_blender, top_recommendation, trending_candidate, unrelated_tennis_ball],
+            {
+                viewed_blender.source_image_url: {
+                    "local_image_key": "img-demo-blender",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                top_recommendation.source_image_url: {
+                    "local_image_key": "img-pro-performance-blender",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                trending_candidate.source_image_url: {
+                    "local_image_key": "img-blender-travel-cup",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                unrelated_tennis_ball.source_image_url: {
+                    "local_image_key": "img-tennis-ball-can-history",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+
+        auth = db_module.create_user("history-trending@example.com", "secret123")
+        user = db_module.get_user_by_token(auth["token"])
+        assert user is not None
+
+        db_module.record_user_event(user["id"], "search", query_text="blender", session_id="login-a")
+        db_module.record_user_event(
+            user["id"],
+            "product_view",
+            product_id=product_ids[0],
+            session_id="login-a",
+            metadata={"originSurface": "catalog"},
+        )
+
+        recommendations = db_module.list_user_recommendations(user["id"], page=1, page_size=1, session_id="login-a")
+
+        trending_ids = [item["id"] for item in recommendations["trending"]]
+        self.assertTrue(trending_ids)
+        self.assertIn(product_ids[2], trending_ids)
+        self.assertNotIn(product_ids[0], trending_ids)
+        self.assertNotIn(product_ids[3], trending_ids)
+
+    def test_trending_products_are_empty_without_history_signal(self):
+        product = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-candle/-/A-8110",
+            canonical_source_url="https://www.target.com/p/demo-candle/-/A-8110",
+            title="Demo Candle",
+            description="Scented candle with no user activity yet",
+            price=18.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="Glow",
+            source_image_url="https://images.example.com/demo-candle.jpg",
+            rating=4.5,
+            review_count=25,
+            tags=["candle", "home", "scented"],
+        )
+        db_module.upsert_products(
+            [product],
+            {
+                product.source_image_url: {
+                    "local_image_key": "img-demo-candle",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                }
+            },
+        )
+
+        auth = db_module.create_user("empty-trending@example.com", "secret123")
+        user = db_module.get_user_by_token(auth["token"])
+        assert user is not None
+
+        recommendations = db_module.list_user_recommendations(user["id"], page=1, page_size=5)
+        self.assertEqual(recommendations["trending"], [])
 
     def test_cached_search_requires_real_text_or_category_evidence(self):
         electronics = ProviderProduct(
@@ -1460,6 +1675,63 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(filtered_count, 0)
         self.assertEqual(exact_count, 1)
         self.assertEqual(ranked_ids, product_ids)
+
+    def test_rank_query_filters_unrelated_candidates_for_blender(self):
+        blender = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-blender-core/-/A-8201",
+            canonical_source_url="https://www.target.com/p/demo-blender-core/-/A-8201",
+            title="Kitchen Blender",
+            description="Countertop blender for smoothies and soups",
+            price=79.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="BlendCo",
+            source_image_url="https://images.example.com/demo-blender-core.jpg",
+            rating=4.6,
+            review_count=58,
+            tags=["blender", "kitchen", "smoothie"],
+        )
+        tennis_ball = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-tennis-ball/-/A-8202",
+            canonical_source_url="https://www.target.com/p/demo-tennis-ball/-/A-8202",
+            title="Championship Tennis Ball Can",
+            description="Tennis balls for practice and tournament play",
+            price=12.99,
+            currency="USD",
+            category_id="sports",
+            category="Sports",
+            brand="Ace",
+            source_image_url="https://images.example.com/demo-tennis-ball.jpg",
+            rating=4.8,
+            review_count=64,
+            tags=["tennis", "ball", "sports"],
+        )
+        product_ids = db_module.upsert_products(
+            [blender, tennis_ball],
+            {
+                blender.source_image_url: {
+                    "local_image_key": "img-demo-blender-core",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                tennis_ball.source_image_url: {
+                    "local_image_key": "img-demo-tennis-ball",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+
+        ranked_ids, exact_count, filtered_count = db_module.rank_product_ids_for_query(product_ids, "blender")
+
+        self.assertEqual(ranked_ids, [product_ids[0]])
+        self.assertEqual(exact_count, 1)
+        self.assertEqual(filtered_count, 1)
 
 
 if __name__ == "__main__":

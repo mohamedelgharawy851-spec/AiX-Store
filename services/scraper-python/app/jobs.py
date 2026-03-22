@@ -382,9 +382,9 @@ class CatalogJobRunner:
         if not candidate_tokens:
             return False
         overlap = candidate_tokens & (anchor_tokens | family_tokens)
-        if strict_category_id:
-            return len(overlap) >= 1
         anchor_overlap = candidate_tokens & anchor_tokens
+        if strict_category_id:
+            return len(overlap) >= 2 and len(anchor_overlap) >= 1
         return len(overlap) >= 2 and len(anchor_overlap) >= 1
 
     def _list_context_items(self, context_key: str, *, category_id: str | None = None) -> list[dict[str, Any]]:

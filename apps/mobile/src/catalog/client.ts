@@ -43,6 +43,7 @@ export function searchCatalog(
     pageSize?: number;
     token?: string | null;
     signal?: AbortSignal;
+    timeoutMs?: number;
   } = {},
 ) {
   const searchParams = new URLSearchParams({ q: query });
@@ -54,6 +55,7 @@ export function searchCatalog(
   return fetchRuntimeJson(`/catalog/search?${searchParams.toString()}`, {
     token: params.token,
     signal: params.signal,
+    timeoutMs: params.timeoutMs,
   }).then((payload) => {
     const typedPayload = payload as CatalogListResponse;
     if (__DEV__ && typedPayload.ai) {
