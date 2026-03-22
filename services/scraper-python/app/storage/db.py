@@ -1797,7 +1797,14 @@ def _build_related_token_set(record: sqlite3.Row | dict[str, Any]) -> set[str]:
     title = normalize_whitespace(_record_value(record, "title", "name")).lower()
     description = normalize_whitespace(_record_value(record, "description")).lower()
     tags = _related_record_tags(record)
+    category_id = normalize_whitespace(_record_value(record, "category_id", "categoryId")).lower()
+    category_name_value = normalize_whitespace(_record_value(record, "category")).lower()
     brand_tokens = _build_search_token_set(normalize_whitespace(_record_value(record, "brand")).lower())
+    category_noise_tokens: set[str] = set()
+    if category_name_value:
+        category_noise_tokens |= _build_search_token_set(category_name_value)
+    if category_id:
+        category_noise_tokens |= _build_search_token_set(category_name(category_id), category_id)
     tokens = _build_search_token_set(title, " ".join(tags), description)
     return {
         token
@@ -1805,6 +1812,7 @@ def _build_related_token_set(record: sqlite3.Row | dict[str, Any]) -> set[str]:
         if token
         and token not in RELATED_TOKEN_STOPWORDS
         and token not in brand_tokens
+        and token not in category_noise_tokens
         and not any(character.isdigit() for character in token)
         and len(token) > 2
     }
@@ -1850,16 +1858,21 @@ def _related_candidate_passes_threshold(
         return True
 
     anchor_category_id = normalize_whitespace(_record_value(anchor_record, "category_id", "categoryId")).lower()
+    candidate_category_id = normalize_whitespace(_record_value(candidate_record, "category_id", "categoryId")).lower()
     anchor_brand = normalize_whitespace(_record_value(anchor_record, "brand")).lower()
     candidate_brand = normalize_whitespace(_record_value(candidate_record, "brand")).lower()
     same_brand = bool(anchor_brand and candidate_brand and anchor_brand == candidate_brand)
+    same_category = bool(anchor_category_id and candidate_category_id and anchor_category_id == candidate_category_id)
+
+    if not same_category:
+        return same_brand and shared_token_count >= 2
 
     if anchor_category_id == "others":
         return shared_token_count >= 2 and overlap_ratio >= 0.45
 
     if shared_token_count >= 2:
         return True
-    if overlap_ratio >= 0.34:
+    if overlap_ratio >= 0.45:
         return True
     if same_brand and shared_token_count >= 1:
         return True
