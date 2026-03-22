@@ -2468,6 +2468,13 @@ export default function App() {
   }
 
   function handleSearchSubmit() {
+    console.log("[AIXStore Search] handleSearchSubmit", {
+      searchInputValue,
+      searchQuery,
+      selectedCategoryId,
+      authState,
+      catalogHydrated,
+    });
     const nextQuery = searchInputValue.trim();
     setSearchQuery(nextQuery);
     if (!nextQuery) {
