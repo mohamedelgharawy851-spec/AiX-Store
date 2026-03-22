@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -54,6 +55,129 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["name"], "Demo TV")
         self.assertEqual(payload["items"][0]["localImageKey"], "img-demo-tv")
+        self.assertEqual(payload["items"][0]["imageUrl"], "/images/img-demo-tv")
+
+    def test_upsert_persists_products_when_image_prefetch_fails(self):
+        product = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-kettle/-/A-1003",
+            canonical_source_url="https://www.target.com/p/demo-kettle/-/A-1003",
+            title="Demo Kettle",
+            description="Tea kettle without prefetched image metadata",
+            price=39.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-kettle.jpg",
+            rating=4.3,
+            review_count=17,
+            tags=["kettle", "kitchen"],
+        )
+
+        product_ids = db_module.upsert_products([product], {})
+
+        self.assertEqual(len(product_ids), 1)
+        payload = db_module.list_products(page=1, page_size=20)
+        self.assertEqual(payload["total"], 1)
+        expected_key = hashlib.sha1(product.source_image_url.encode("utf-8")).hexdigest()
+        self.assertEqual(payload["items"][0]["localImageKey"], expected_key)
+        self.assertEqual(payload["items"][0]["imageUrl"], f"/images/{expected_key}")
+
+    def test_extract_product_keywords_keeps_core_title_phrases(self):
+        keywords = db_module.extract_product_keywords(
+            {
+                "name": "LEGO Technic Rubik's Cube 3x3 Puzzle Set",
+                "description": "Classic Rubik puzzle cube brain teaser and building toy",
+                "categoryId": "toys",
+                "category": "Toys",
+                "tags": ["rubik", "cube", "puzzle"],
+            }
+        )
+
+        self.assertTrue(any("rubik" in keyword and "cube" in keyword for keyword in keywords))
+        self.assertLessEqual(len(keywords), 8)
+
+    def test_find_related_products_hybrid_surfaces_cross_category_matches(self):
+        anchor = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
+            canonical_source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
+            title="Rubik's Cube The Original 3x3 Cube",
+            description="Classic Rubik puzzle cube brain teaser and fidget toy",
+            price=10.49,
+            currency="USD",
+            category_id="toys",
+            category="Toys",
+            brand="Spin Master",
+            source_image_url="https://images.example.com/rubiks-cube-classic.jpg",
+            rating=4.8,
+            review_count=120,
+            tags=["rubik", "cube", "puzzle", "brain teaser"],
+        )
+        cross_category_match = ProviderProduct(
+            provider="Walmart",
+            source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
+            canonical_source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
+            title="Rubik's 3x3 Speed Cube",
+            description="Magnetic Rubik speed cube for fast solving",
+            price=14.99,
+            currency="USD",
+            category_id="others",
+            category="Others",
+            brand="Rubik's",
+            source_image_url="https://images.example.com/rubiks-speed-cube.jpg",
+            rating=4.6,
+            review_count=58,
+            tags=["rubik", "cube", "speed cube", "puzzle"],
+        )
+        unrelated_same_category = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/lego-batmobile/-/A-7303",
+            canonical_source_url="https://www.target.com/p/lego-batmobile/-/A-7303",
+            title="LEGO DC Batman Batmobile",
+            description="Creative building toy for Batman fans",
+            price=29.99,
+            currency="USD",
+            category_id="toys",
+            category="Toys",
+            brand="LEGO",
+            source_image_url="https://images.example.com/lego-batmobile.jpg",
+            rating=4.8,
+            review_count=92,
+            tags=["lego", "building toy", "batman"],
+        )
+        product_ids = db_module.upsert_products(
+            [anchor, cross_category_match, unrelated_same_category],
+            {
+                anchor.source_image_url: {
+                    "local_image_key": "img-rubiks-cube-classic",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                cross_category_match.source_image_url: {
+                    "local_image_key": "img-rubiks-speed-cube",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                unrelated_same_category.source_image_url: {
+                    "local_image_key": "img-lego-batmobile",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+
+        payload = db_module.find_related_products_hybrid(product_ids[0], page=1, page_size=10)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["items"][0]["id"], product_ids[1])
+        self.assertIn(product_ids[1], [item["id"] for item in payload["items"]])
+        self.assertTrue(any("rubik" in keyword and "cube" in keyword for keyword in payload["keywords"]))
 
     def test_reset_product_linked_state_preserves_users_sessions_and_search_history(self):
         primary = ProviderProduct(
@@ -1481,13 +1605,13 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(history["items"][0]["canonicalSourceUrl"], product.canonical_source_url)
         self.assertEqual(history["items"][0]["productSnapshot"]["name"], "Demo Speaker")
 
-    def test_related_products_stay_category_consistent(self):
+    def test_related_products_prioritize_relevant_same_category_matches(self):
         anchor = ProviderProduct(
             provider="Target",
             source_url="https://www.target.com/p/demo-dog-toy/-/A-7001",
             canonical_source_url="https://www.target.com/p/demo-dog-toy/-/A-7001",
-            title="Demo Dog Toy",
-            description="Toy for dogs to chew and fetch",
+            title="Dog Fetch Rope Toy",
+            description="Durable rope toy for dogs to chew and fetch",
             price=12.99,
             currency="USD",
             category_id="toys",
@@ -1496,14 +1620,14 @@ class DatabaseTests(unittest.TestCase):
             source_image_url="https://images.example.com/demo-dog-toy.jpg",
             rating=4.7,
             review_count=32,
-            tags=["dog", "toy", "fetch"],
+            tags=["dog", "rope", "toy", "fetch"],
         )
         related_toy = ProviderProduct(
             provider="Target",
             source_url="https://www.target.com/p/demo-fetch-toy/-/A-7002",
             canonical_source_url="https://www.target.com/p/demo-fetch-toy/-/A-7002",
-            title="Fetch Rope Toy",
-            description="Durable rope toy for fetch games",
+            title="Dog Rope Fetch Toy",
+            description="Rope toy for dog fetch games and chewing",
             price=10.99,
             currency="USD",
             category_id="toys",
@@ -1557,7 +1681,7 @@ class DatabaseTests(unittest.TestCase):
         related = db_module.get_related_products(product_ids[0], page=1, page_size=10)
 
         assert related is not None
-        self.assertEqual([item["categoryId"] for item in related["items"]], ["toys"])
+        self.assertEqual([item["id"] for item in related["items"]], [product_ids[1]])
 
     def test_related_products_for_others_require_real_family_overlap(self):
         anchor = ProviderProduct(

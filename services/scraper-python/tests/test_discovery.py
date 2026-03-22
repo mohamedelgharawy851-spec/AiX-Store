@@ -783,7 +783,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["id"], page_two_id)
         self.assertEqual(payload["matching"]["source"], "expanded")
 
-    def test_related_page_two_uses_catalog_search_pagination(self):
+    def test_related_page_two_uses_hybrid_pagination(self):
         base_id = self._seed_product(
             url_suffix="apple-watch-9",
             title="Apple Watch Series 9",
@@ -803,104 +803,25 @@ class DiscoveryTests(unittest.TestCase):
         assert extra_product is not None
 
         with patch.object(
-            runner,
-            "search",
-            AsyncMock(
-                return_value={
-                    "items": [extra_product],
-                    "page": 2,
-                    "pageSize": 3,
-                    "hasMore": False,
-                    "total": 3,
-                }
-            ),
-        ) as search_mock:
+            jobs_module,
+            "get_related_products",
+            return_value={
+                "items": [extra_product],
+                "page": 2,
+                "pageSize": 1,
+                "hasMore": False,
+                "total": 3,
+            },
+        ) as related_mock:
             payload = asyncio.run(runner.get_related(base_id, page=2, page_size=1))
 
         self.assertIsNotNone(payload)
         assert payload is not None
         self.assertEqual(payload["items"][0]["id"], extra_id)
         self.assertEqual(payload["page"], 2)
-        self.assertEqual(search_mock.await_args.kwargs["page"], 2)
+        self.assertEqual(related_mock.call_args.kwargs["page"], 2)
 
-    def test_related_page_filters_out_the_open_product_from_search_results(self):
-        base_id = self._seed_product(
-            url_suffix="tennis-ball-can",
-            title="Championship Tennis Ball Can",
-            description="Pressurized tennis balls for match play",
-            category_id="sports",
-            tags=["tennis", "ball", "sports"],
-        )
-        related_id = self._seed_product(
-            url_suffix="training-tennis-ball-pack",
-            title="Training Tennis Ball Pack",
-            description="Durable tennis ball pack for practice sessions",
-            category_id="sports",
-            tags=["tennis", "ball", "practice"],
-        )
-        runner = jobs_module.CatalogJobRunner()
-        current_product = db_module.get_product(base_id)
-        related_product = db_module.get_product(related_id)
-        assert current_product is not None
-        assert related_product is not None
-
-        with patch.object(
-            runner,
-            "search",
-            AsyncMock(
-                return_value={
-                    "items": [current_product, related_product],
-                    "page": 1,
-                    "pageSize": 4,
-                    "hasMore": False,
-                    "total": 2,
-                }
-            ),
-        ):
-            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=2))
-
-        self.assertIsNotNone(payload)
-        assert payload is not None
-        self.assertEqual([item["id"] for item in payload["items"]], [related_id])
-
-    def test_related_page_one_uses_search_total_for_has_more(self):
-        base_id = self._seed_product(
-            url_suffix="portable-ping-pong-table",
-            title="Portable Ping Pong Table",
-            description="Foldable table tennis table with paddles",
-            category_id="others",
-            tags=["ping pong", "table tennis", "portable"],
-        )
-        first_related_id = self._seed_product(
-            url_suffix="blue-portable-table-tennis-table",
-            title="Blue Portable Table Tennis Table",
-            description="Tournament-style ping pong table for indoor games",
-            category_id="others",
-            tags=["table tennis", "ping pong", "portable"],
-        )
-        runner = jobs_module.CatalogJobRunner()
-        first_related = db_module.get_product(first_related_id)
-        assert first_related is not None
-
-        with patch.object(
-            runner,
-            "search",
-            AsyncMock(
-                return_value={
-                    "items": [first_related],
-                    "page": 1,
-                    "pageSize": 3,
-                    "hasMore": False,
-                    "total": 4,
-                }
-            ),
-        ):
-            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
-
-        assert payload is not None
-        self.assertTrue(payload["hasMore"])
-
-    def test_get_related_uses_catalog_search_results_directly(self):
+    def test_get_related_returns_hybrid_cross_category_results(self):
         base_id = self._seed_product(
             url_suffix="rubiks-cube-classic",
             title="Rubik's Cube The Original 3x3 Cube",
@@ -916,32 +837,37 @@ class DiscoveryTests(unittest.TestCase):
             tags=["rubik", "cube", "speed cube"],
         )
         runner = jobs_module.CatalogJobRunner()
-        current_product = db_module.get_product(base_id)
-        related_product = db_module.get_product(related_id)
-        assert current_product is not None
-        assert related_product is not None
+        payload = asyncio.run(runner.get_related(base_id, page=1, page_size=3))
 
-        with patch.object(
-            runner,
-            "search",
-            AsyncMock(
-                return_value={
-                    "items": [current_product, related_product],
-                    "page": 1,
-                    "pageSize": 3,
-                    "hasMore": False,
-                    "total": 2,
-                }
-            ),
-        ) as search_mock:
-            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["items"][0]["id"], related_id)
+        self.assertIn(related_id, [item["id"] for item in payload["items"]])
+        self.assertIn("keywords", payload)
+
+    def test_get_related_uses_hybrid_keyword_extraction_for_broad_title_match(self):
+        base_id = self._seed_product(
+            url_suffix="cap-neoprene-dumbbell-orange",
+            title="CAP Neoprene Dumbbell 3lbs - Orange",
+            description="Neoprene dumbbell for strength training",
+            category_id="sports",
+            tags=["cap", "dumbbell", "weights"],
+        )
+        related_id = self._seed_product(
+            url_suffix="cap-neoprene-dumbbell-blue",
+            title="CAP Neoprene Dumbbell 5lbs - Blue",
+            description="Neoprene dumbbell for strength training",
+            category_id="sports",
+            tags=["cap", "dumbbell", "weights"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
 
         self.assertIsNotNone(payload)
         assert payload is not None
         self.assertEqual([item["id"] for item in payload["items"]], [related_id])
-        self.assertIsNone(search_mock.await_args.kwargs["category_id"])
 
-    def test_get_detail_populates_related_products_from_catalog_search(self):
+    def test_get_detail_populates_related_products_from_hybrid_lookup(self):
         base_id = self._seed_product(
             url_suffix="rubiks-cube-detail",
             title="Rubik's Cube The Original 3x3 Cube",
@@ -957,9 +883,7 @@ class DiscoveryTests(unittest.TestCase):
             tags=["rubik", "cube", "speed cube"],
         )
         runner = jobs_module.CatalogJobRunner()
-        current_product = db_module.get_product(base_id)
         related_product = db_module.get_product(related_id)
-        assert current_product is not None
         assert related_product is not None
 
         with patch.object(
@@ -967,17 +891,15 @@ class DiscoveryTests(unittest.TestCase):
             "_provider_for_product",
             lambda *args, **kwargs: None,
         ), patch.object(
-            runner,
-            "search",
-            AsyncMock(
-                return_value={
-                    "items": [current_product, related_product],
-                    "page": 1,
-                    "pageSize": 8,
-                    "hasMore": False,
-                    "total": 2,
-                }
-            ),
+            jobs_module,
+            "get_related_products",
+            return_value={
+                "items": [related_product],
+                "page": 1,
+                "pageSize": 6,
+                "hasMore": False,
+                "total": 1,
+            },
         ):
             payload = asyncio.run(runner.get_detail(base_id))
 
@@ -985,7 +907,7 @@ class DiscoveryTests(unittest.TestCase):
         assert payload is not None
         self.assertEqual([item["id"] for item in payload["relatedProducts"]], [related_id])
 
-    def test_related_page_ignores_old_related_cache_rows_when_search_finds_better_match(self):
+    def test_related_page_ignores_old_related_cache_rows_when_hybrid_finds_better_match(self):
         base_id = self._seed_product(
             url_suffix="nike-running-shoes",
             title="Nike Running Shoes",
@@ -1008,8 +930,6 @@ class DiscoveryTests(unittest.TestCase):
             tags=["nike", "running", "shoes"],
         )
         runner = jobs_module.CatalogJobRunner()
-        search_related = db_module.get_product(search_related_id)
-        assert search_related is not None
 
         with db_module.get_connection() as connection:
             connection.execute(
@@ -1021,20 +941,7 @@ class DiscoveryTests(unittest.TestCase):
             )
             connection.commit()
 
-        with patch.object(
-            runner,
-            "search",
-            AsyncMock(
-                return_value={
-                    "items": [search_related],
-                    "page": 1,
-                    "pageSize": 4,
-                    "hasMore": False,
-                    "total": 1,
-                }
-            ),
-        ):
-            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
+        payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
 
         self.assertIsNotNone(payload)
         assert payload is not None

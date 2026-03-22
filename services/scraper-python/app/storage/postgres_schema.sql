@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS public.products (
 
 CREATE INDEX IF NOT EXISTS idx_products_category_id ON public.products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON public.products(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_products_fts ON public.products
+USING gin (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, '')));
 
 CREATE TABLE IF NOT EXISTS public.queries (
   normalized_query TEXT PRIMARY KEY,

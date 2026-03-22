@@ -124,6 +124,58 @@ RELATED_TOKEN_STOPWORDS = {
     "sports",
     "others",
 }
+RELATED_KEYWORD_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "for",
+    "with",
+    "in",
+    "on",
+    "at",
+    "to",
+    "of",
+    "is",
+    "are",
+    "was",
+    "be",
+    "this",
+    "that",
+    "it",
+    "set",
+    "pack",
+    "piece",
+    "new",
+    "best",
+    "top",
+    "buy",
+    "get",
+    "size",
+    "color",
+    "black",
+    "white",
+    "red",
+    "blue",
+    "green",
+    "large",
+    "small",
+    "medium",
+    "original",
+    "classic",
+    "edition",
+    "model",
+    "version",
+    "style",
+    "kit",
+    "toy",
+    "toys",
+}
+RELATED_KEYWORD_SIZE_PATTERN = re.compile(
+    r"^(?:\d+|\d+x\d+|\d+(?:lb|lbs|oz|ct|pk|pack)|xxs|xs|s|m|l|xl|xxl|xxxl)$",
+    re.IGNORECASE,
+)
 FEATURED_OFFERS_LIMIT = 10
 FEATURED_OFFER_MAX_PER_CATEGORY = 2
 
@@ -610,6 +662,19 @@ def _decode_image_gallery(value: str | None, primary_url: str | None = None) -> 
     return _merge_image_gallery_urls(primary_url, urls)
 
 
+def _has_any_image_urls(primary_url: str | None, gallery_urls: list[str] | None = None) -> bool:
+    return bool(_merge_image_gallery_urls(primary_url, *(gallery_urls or [] for _ in []) if False else (gallery_urls or [])))
+
+
+def _resolved_primary_image_url(source_image_url: str | None, gallery_urls: list[str] | None = None) -> str:
+    merged_urls = _merge_image_gallery_urls(source_image_url, gallery_urls or [])
+    return merged_urls[0] if merged_urls else ""
+
+
+def _row_has_any_image(row: sqlite3.Row) -> bool:
+    return bool(_decode_image_gallery(row["image_gallery_json"], row["source_image_url"]))
+
+
 def _find_nested_value(payload: Any, candidate_keys: set[str]) -> str | None:
     queue: list[Any] = [payload]
     while queue:
@@ -871,6 +936,23 @@ def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dic
     }
 
 
+def _fallback_image_meta(source_image_url: str) -> dict[str, Any]:
+    normalized_url = normalize_whitespace(source_image_url)
+    return {
+        "local_image_key": hashlib.sha1(normalized_url.encode("utf-8")).hexdigest(),
+        "image_mime": "image/jpeg",
+        "image_width": 0,
+        "image_height": 0,
+    }
+
+
+def _runtime_image_path(local_image_key: str | None) -> str:
+    image_key = normalize_whitespace(local_image_key)
+    if not image_key:
+        return ""
+    return f"/images/{image_key}"
+
+
 def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
     has_reviews = int(row["review_count"] or 0) > 0
     price = from_cents(row["price_cents"])
@@ -885,6 +967,7 @@ def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
     }
     variant_label = normalize_whitespace(row["variant_label"]) or None
     gallery_urls = _decode_image_gallery(row["image_gallery_json"], row["source_image_url"])
+    image_url = _runtime_image_path(row["local_image_key"]) or row["source_image_url"]
     image_gallery = [
         {
             "id": f"{row['id']}:img:{index}",
@@ -909,7 +992,7 @@ def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
         "originalPrice": original_price,
         "currency": row["currency"],
         "rating": float(row["rating"] or 0.0),
-        "imageUrl": row["source_image_url"],
+        "imageUrl": image_url,
         "imageAltText": row["title"],
         "reviewCount": int(row["review_count"] or 0),
         "sourceSite": row["provider"],
@@ -1280,9 +1363,7 @@ def upsert_products(
     ai_category_applied = False
     with _write_connection() as connection:
         for product in products:
-            image_meta = image_meta_by_url.get(product.source_image_url)
-            if not image_meta:
-                continue
+            image_meta = image_meta_by_url.get(product.source_image_url) or _fallback_image_meta(product.source_image_url)
             row = _product_to_row(product, image_meta)
             if not row:
                 continue
@@ -2189,6 +2270,392 @@ def _related_search_queries(record: sqlite3.Row | dict[str, Any]) -> list[str]:
     return queries
 
 
+def _keyword_terms(value: str | None) -> list[str]:
+    return [normalize_whitespace(term).lower() for term in re.findall(r"[a-z0-9']+", normalize_whitespace(value).lower())]
+
+
+def _keyword_term_is_meaningful(term: str) -> bool:
+    normalized_term = normalize_whitespace(term).lower().strip("'")
+    if not normalized_term or normalized_term in RELATED_KEYWORD_STOPWORDS:
+        return False
+    if normalized_term in VARIANT_COLOR_TERMS or normalized_term in FAMILY_NOISE_TERMS:
+        return False
+    if RELATED_KEYWORD_SIZE_PATTERN.fullmatch(normalized_term):
+        return False
+    return len(normalized_term) > 1
+
+
+def _compressed_keyword_terms(terms: list[str]) -> list[str]:
+    filtered: list[str] = []
+    for raw_term in terms:
+        normalized_term = normalize_whitespace(raw_term).lower().strip("'")
+        if not _keyword_term_is_meaningful(normalized_term):
+            continue
+        if filtered and filtered[-1] == normalized_term:
+            continue
+        filtered.append(normalized_term)
+    return filtered
+
+
+def _append_unique_keyword(target: list[str], seen: set[str], value: str | None) -> None:
+    normalized_value = normalize_whitespace(value).lower()
+    if not normalized_value or normalized_value in seen:
+        return
+    seen.add(normalized_value)
+    target.append(normalized_value)
+
+
+def _join_keyword_terms(terms: list[str]) -> str:
+    return normalize_whitespace(" ".join(term for term in terms if normalize_whitespace(term)))
+
+
+def extract_product_keywords(product: dict[str, Any]) -> list[str]:
+    title = normalize_whitespace(product.get("name") or product.get("title"))
+    description = normalize_whitespace(product.get("description"))[:100]
+    category_value = normalize_whitespace(product.get("category") or category_name(product.get("categoryId")))
+    raw_tags = product.get("tags") if isinstance(product.get("tags"), list) else []
+
+    title_terms = _compressed_keyword_terms(_keyword_terms(title))
+    description_terms = _compressed_keyword_terms(_keyword_terms(description))
+    category_terms = _compressed_keyword_terms(_keyword_terms(category_value))
+    tag_terms = _compressed_keyword_terms(_keyword_terms(" ".join(str(tag) for tag in raw_tags)))
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+
+    context_tokens = _build_search_token_set(description, " ".join(tag_terms), category_value)
+    phrase_candidates: list[tuple[float, str]] = []
+    for size in (3, 2, 1):
+        if len(title_terms) < size:
+            continue
+        for index in range(0, len(title_terms) - size + 1):
+            phrase = _join_keyword_terms(title_terms[index : index + size])
+            phrase_tokens = _build_search_token_set(phrase)
+            if not phrase_tokens:
+                continue
+            overlap = len(phrase_tokens & context_tokens)
+            score = (size * 3.0) + (overlap * 1.4) - (index * 0.08)
+            phrase_candidates.append((score, phrase))
+    phrase_candidates.sort(key=lambda item: item[0], reverse=True)
+    for _, phrase in phrase_candidates[:6]:
+        _append_unique_keyword(keywords, seen, phrase)
+    if category_terms and category_terms != ["others"]:
+        _append_unique_keyword(keywords, seen, _join_keyword_terms(category_terms[:2]))
+    if len(description_terms) >= 2:
+        _append_unique_keyword(keywords, seen, _join_keyword_terms(description_terms[:2]))
+    for term in description_terms[:2]:
+        _append_unique_keyword(keywords, seen, term)
+    _append_unique_keyword(keywords, seen, title)
+    return keywords[:8]
+
+
+def _related_fulltext_query_text(keywords: list[str]) -> str:
+    query_terms: list[str] = []
+    seen: set[str] = set()
+    for keyword in keywords:
+        for term in _compressed_keyword_terms(_keyword_terms(keyword)):
+            if term in seen:
+                continue
+            seen.add(term)
+            query_terms.append(term)
+            if len(query_terms) >= 6:
+                return " ".join(query_terms)
+    return " ".join(query_terms)
+
+
+def _search_products_by_keyword_for_related(
+    keyword: str,
+    *,
+    limit: int,
+    exclude_id: str,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    payload = search_cached_products(
+        keyword,
+        page=1,
+        page_size=limit,
+        category_id=None,
+        user_id=user_id,
+    )
+    candidates: list[dict[str, Any]] = []
+    for rank, item in enumerate(payload.get("items", [])):
+        candidate_id = str(item.get("id") or "")
+        if not candidate_id or candidate_id == exclude_id:
+            continue
+        candidate = dict(item)
+        candidate["_related_keyword"] = keyword
+        candidate["_related_search_rank"] = rank
+        candidates.append(candidate)
+    return candidates
+
+
+def _fulltext_search_related_rows(
+    connection: sqlite3.Connection,
+    query_text: str,
+    *,
+    exclude_id: str,
+    limit: int,
+) -> list[tuple[sqlite3.Row | dict[str, Any], float]]:
+    normalized_query = normalize_whitespace(query_text).lower()
+    if not normalized_query:
+        return []
+
+    if postgres_enabled():
+        rows = connection.execute(
+            """
+            SELECT *,
+                   ts_rank_cd(
+                     to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, '')),
+                     plainto_tsquery('english', ?)
+                   ) AS text_rank
+            FROM products
+            WHERE is_active = 1
+              AND id != ?
+              AND to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, ''))
+                  @@ plainto_tsquery('english', ?)
+            ORDER BY text_rank DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (normalized_query, exclude_id, normalized_query, limit),
+        ).fetchall()
+        return [(row, float(_record_value(row, "text_rank") or 0.0)) for row in rows]
+
+    query_tokens = _build_search_token_set(normalized_query)
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM products
+        WHERE is_active = 1
+          AND id != ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (exclude_id, max(limit * 10, 240)),
+    ).fetchall()
+    scored_rows: list[tuple[sqlite3.Row, float]] = []
+    for row in rows:
+        haystack_parts = _build_search_haystack_parts(row)
+        haystack = " ".join(haystack_parts)
+        haystack_tokens = _build_search_token_set(*haystack_parts)
+        matched_terms = sum(1 for token in query_tokens if token in haystack_tokens)
+        if matched_terms <= 0 and normalized_query not in haystack:
+            continue
+        score = matched_terms / max(1, len(query_tokens))
+        if _matches_phrase_or_token(normalized_query, haystack, haystack_tokens):
+            score += 1.5
+        if normalized_query in normalize_whitespace(row["title"]).lower():
+            score += 1.0
+        scored_rows.append((row, score))
+    scored_rows.sort(key=lambda item: (item[1], float(item[0]["rating"] or 0.0), item[0]["updated_at"]), reverse=True)
+    return scored_rows[:limit]
+
+
+def _candidate_title_keyword_hit_count(candidate: dict[str, Any], keywords: list[str]) -> int:
+    title = normalize_whitespace(candidate.get("name") or candidate.get("title")).lower()
+    title_tokens = _build_search_token_set(title)
+    hits = 0
+    for keyword in keywords[:3]:
+        if _matches_phrase_or_token(keyword, title, title_tokens):
+            hits += 1
+    return hits
+
+
+def _price_similarity_bonus(anchor_price: float | None, candidate_price: float | None) -> float:
+    if anchor_price is None or candidate_price is None or anchor_price <= 0 or candidate_price <= 0:
+        return 0.0
+    lower_bound = anchor_price * 0.5
+    upper_bound = anchor_price * 1.5
+    return 1.0 if lower_bound <= candidate_price <= upper_bound else 0.0
+
+
+def _score_related_candidate(
+    anchor_product: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    keywords: list[str],
+    best_search_score: float,
+    best_search_rank: int | None,
+    keyword_hits: set[str],
+    fulltext_rank: float,
+) -> float:
+    shared_token_count, overlap_ratio = _related_overlap_metrics(anchor_product, candidate)
+    title_keyword_hits = _candidate_title_keyword_hit_count(candidate, keywords)
+    same_category = str(anchor_product.get("categoryId") or "") == str(candidate.get("categoryId") or "")
+    same_provider = normalize_whitespace(anchor_product.get("provider")).lower() == normalize_whitespace(candidate.get("provider")).lower()
+    same_brand = normalize_whitespace(anchor_product.get("brand")).lower() == normalize_whitespace(candidate.get("brand")).lower()
+    same_family = (
+        normalize_whitespace(anchor_product.get("familyKey"))
+        and normalize_whitespace(anchor_product.get("familyKey")) == normalize_whitespace(candidate.get("familyKey"))
+        and same_provider
+    )
+
+    score = 0.0
+    score += best_search_score * 10.0
+    score += min(fulltext_rank, 2.5) * 5.0
+    score += len(keyword_hits) * 2.5
+    score += title_keyword_hits * 2.0
+    score += shared_token_count * 1.7
+    score += overlap_ratio * 4.0
+    score += 3.0 if same_category else 0.0
+    score += 1.0 if same_provider else 0.0
+    score += 0.8 if same_brand else 0.0
+    score += _price_similarity_bonus(
+        float(anchor_product.get("price") or 0.0),
+        float(candidate.get("price") or 0.0),
+    )
+    if best_search_rank is not None:
+        score += max(0.0, 2.5 - (best_search_rank * 0.15))
+    if same_family:
+        score += 6.0
+    if not keyword_hits and fulltext_rank <= 0.0 and shared_token_count <= 0 and title_keyword_hits <= 0:
+        score -= 100.0
+    return score
+
+
+def _compute_related_scores(
+    connection: sqlite3.Connection,
+    product_id: str,
+    limit: int,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    del session_id
+    product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    if not product_row:
+        return [], 0
+
+    anchor_product = _row_to_product(product_row)
+    keywords = extract_product_keywords(anchor_product)
+    if not keywords:
+        return [], 0
+
+    fetch_limit = max(limit + offset + 12, 24)
+    candidate_index: dict[str, dict[str, Any]] = {}
+
+    def register_candidate(
+        candidate: dict[str, Any],
+        *,
+        keyword: str | None = None,
+        search_rank: int | None = None,
+        search_score: float | None = None,
+        fulltext_rank: float | None = None,
+    ) -> None:
+        candidate_id = str(candidate.get("id") or "")
+        if not candidate_id or candidate_id == product_id:
+            return
+        meta = candidate_index.setdefault(
+            candidate_id,
+            {
+                "candidate": candidate,
+                "keyword_hits": set(),
+                "best_search_rank": None,
+                "best_search_score": 0.0,
+                "fulltext_rank": 0.0,
+            },
+        )
+        meta["candidate"] = candidate
+        if keyword:
+            meta["keyword_hits"].add(normalize_whitespace(keyword).lower())
+        if search_rank is not None and (
+            meta["best_search_rank"] is None or int(search_rank) < int(meta["best_search_rank"])
+        ):
+            meta["best_search_rank"] = int(search_rank)
+        if search_score is not None:
+            meta["best_search_score"] = max(float(meta["best_search_score"]), float(search_score))
+        if fulltext_rank is not None:
+            meta["fulltext_rank"] = max(float(meta["fulltext_rank"]), float(fulltext_rank))
+
+    for keyword in keywords[:2]:
+        for candidate in _search_products_by_keyword_for_related(
+            keyword,
+            limit=fetch_limit,
+            exclude_id=product_id,
+            user_id=user_id,
+        ):
+            register_candidate(
+                candidate,
+                keyword=keyword,
+                search_rank=int(candidate.get("_related_search_rank") or 0),
+                search_score=float(candidate.get("score") or 0.0),
+            )
+
+    fulltext_query = _related_fulltext_query_text(keywords)
+    for row, rank in _fulltext_search_related_rows(
+        connection,
+        fulltext_query,
+        exclude_id=product_id,
+        limit=fetch_limit,
+    ):
+        register_candidate(_row_to_product(row), fulltext_rank=rank)
+
+    if not candidate_index:
+        return [], 0
+
+    scored_candidates: list[tuple[float, dict[str, Any]]] = []
+    for meta in candidate_index.values():
+        candidate = dict(meta["candidate"])
+        score = _score_related_candidate(
+            anchor_product,
+            candidate,
+            keywords=keywords,
+            best_search_score=float(meta["best_search_score"]),
+            best_search_rank=meta["best_search_rank"],
+            keyword_hits=set(meta["keyword_hits"]),
+            fulltext_rank=float(meta["fulltext_rank"]),
+        )
+        if score <= 0:
+            continue
+        candidate["score"] = round(score, 4)
+        scored_candidates.append((score, candidate))
+
+    scored_candidates.sort(
+        key=lambda item: (
+            item[0],
+            float(item[1].get("rating") or 0.0),
+            int(item[1].get("reviewCount") or 0),
+        ),
+        reverse=True,
+    )
+
+    ranked_candidates = [candidate for _, candidate in scored_candidates]
+    total = len(ranked_candidates)
+    return ranked_candidates[offset : offset + limit], total
+
+
+def find_related_products_hybrid(
+    product_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 12,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    offset = max(page - 1, 0) * page_size
+    with get_connection() as connection:
+        items, total = _compute_related_scores(
+            connection,
+            product_id,
+            limit=page_size,
+            user_id=user_id,
+            session_id=session_id,
+            offset=offset,
+        )
+        if not total and not items:
+            return None
+        annotate_products_with_favorites(items, user_id, connection=connection)
+        product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+        anchor_product = _row_to_product(product_row) if product_row else None
+        return {
+            "items": items,
+            "page": page,
+            "pageSize": page_size,
+            "hasMore": page * page_size < total,
+            "total": total,
+            "keywords": extract_product_keywords(anchor_product or {}) if anchor_product else [],
+        }
+
+
 def _shared_query_count_lookup(
     connection: sqlite3.Connection,
     product_id: str,
@@ -2492,155 +2959,6 @@ def get_source_image_url(local_image_key: str) -> str | None:
     return str(row["source_image_url"]) if row else None
 
 
-def _compute_related_scores(
-    connection: sqlite3.Connection,
-    product_id: str,
-    limit: int,
-    user_id: str | None = None,
-    session_id: str | None = None,
-    offset: int = 0,
-) -> tuple[list[dict[str, Any]], int]:
-    product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-    if not product_row:
-        return [], 0
-
-    current_related_tokens = _build_related_token_set(product_row)
-    related_queries = _related_search_queries(product_row)
-    if not related_queries and not current_related_tokens:
-        return [], 0
-
-    # 1. Search the products database using the same Stage 1 cached-search path.
-    affinity_lookup = {}
-    recent_category_bias: dict[str, float] = {}
-    recent_tag_bias: dict[str, float] = {}
-    if user_id:
-        preference_context = _build_event_affinities(connection, user_id, session_id=session_id)
-        affinity_lookup = preference_context["affinities"]
-        recent_category_bias = preference_context["recentCategoryBias"]
-        recent_tag_bias = preference_context["recentTagBias"]
-
-    search_page_size = max((offset + limit) * 3, 24)
-    search_candidates_by_id: dict[str, dict[str, Any]] = {}
-    search_candidate_meta: dict[str, tuple[int, int]] = {}
-    for query_index, related_query in enumerate(related_queries):
-        stage_one_payload = search_cached_products(
-            related_query,
-            page=1,
-            page_size=search_page_size,
-            category_id=None,
-            user_id=user_id,
-        )
-        for candidate_rank, candidate in enumerate(stage_one_payload.get("items", [])):
-            candidate_id = str(candidate.get("id") or "")
-            if not candidate_id or candidate_id == product_id:
-                continue
-            if candidate_id not in search_candidates_by_id:
-                search_candidates_by_id[candidate_id] = candidate
-                search_candidate_meta[candidate_id] = (query_index, candidate_rank)
-                continue
-            best_query_index, best_candidate_rank = search_candidate_meta[candidate_id]
-            if (query_index, candidate_rank) < (best_query_index, best_candidate_rank):
-                search_candidates_by_id[candidate_id] = candidate
-                search_candidate_meta[candidate_id] = (query_index, candidate_rank)
-
-    if not search_candidates_by_id:
-        return [], 0
-
-    shared_query_counts = _shared_query_count_lookup(
-        connection,
-        product_id,
-        sorted(search_candidates_by_id.keys()),
-    )
-    scored_candidates: list[tuple[float, dict[str, Any]]] = []
-    anchor_brand = normalize_whitespace(product_row["brand"]).lower()
-    for candidate_id, candidate in search_candidates_by_id.items():
-        shared_token_count, overlap_ratio = _related_overlap_metrics(product_row, candidate)
-        shared_query_count = shared_query_counts.get(candidate_id, 0)
-        if not _related_candidate_passes_threshold(
-            product_row,
-            candidate,
-            shared_query_count=shared_query_count,
-            shared_token_count=shared_token_count,
-            overlap_ratio=overlap_ratio,
-        ):
-            continue
-        candidate_tokens = _build_related_token_set(candidate)
-        query_index, candidate_rank = search_candidate_meta[candidate_id]
-        score = float(candidate.get("score") or 0.0) * 12.0
-        score += shared_token_count * 10.0
-        score += overlap_ratio * 15.0
-        score += shared_query_count * 6.0
-        score += max(0, len(related_queries) - query_index) * 1.5
-        score += max(0.0, 1.0 - (candidate_rank / max(search_page_size, 1))) * 4.0
-        if anchor_brand and anchor_brand == normalize_whitespace(candidate.get("brand")).lower():
-            score += 2.5
-        if user_id:
-            score += affinity_lookup.get(("category", str(candidate.get("categoryId") or "").lower()), 0.0) * 0.7
-            score += affinity_lookup.get(("brand", normalize_whitespace(candidate.get("brand")).lower()), 0.0) * 0.35
-            score += sum(affinity_lookup.get(("tag", tag.lower()), 0.0) for tag in candidate_tokens) * 0.2
-            score += recent_category_bias.get(str(candidate.get("categoryId") or "").lower(), 0.0) * 0.6
-            score += sum(recent_tag_bias.get(tag.lower(), 0.0) for tag in candidate_tokens) * 0.15
-        scored_candidates.append((score, candidate))
-
-    scored_candidates.sort(
-        key=lambda item: (
-            item[0],
-            float(item[1].get("rating") or 0.0),
-            int(item[1].get("reviewCount") or 0),
-        ),
-        reverse=True,
-    )
-    ranked_candidates: list[dict[str, Any]] = []
-    seen_keys: set[str] = set()
-    for _, candidate in scored_candidates:
-        key = _product_identity_key(candidate)
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        ranked_candidates.append(candidate)
-    if ranked_candidates:
-        total = len(ranked_candidates)
-        return ranked_candidates[offset : offset + limit], total
-
-    # 2. Only if search could not find anything useful, fall back to stored related rows.
-    rel_rows = connection.execute(
-        """
-        SELECT p.*, rp.score as table_score, rp.reason
-        FROM related_products rp
-        JOIN products p ON p.id = rp.related_product_id
-        WHERE rp.product_id = ? AND p.is_active = 1
-        ORDER BY rp.score DESC
-        """,
-        (product_id,)
-    ).fetchall()
-    if not rel_rows:
-        return [], 0
-
-    shared_query_counts = _shared_query_count_lookup(
-        connection,
-        product_id,
-        [str(row["id"]) for row in rel_rows if row["id"]],
-    )
-    filtered_rel_rows: list[sqlite3.Row] = []
-    for row in rel_rows:
-        shared_token_count, overlap_ratio = _related_overlap_metrics(product_row, row)
-        if not _related_candidate_passes_threshold(
-            product_row,
-            row,
-            shared_query_count=shared_query_counts.get(str(row["id"]), 0),
-            shared_token_count=shared_token_count,
-            overlap_ratio=overlap_ratio,
-        ):
-            continue
-        filtered_rel_rows.append(row)
-    if not filtered_rel_rows:
-        return [], 0
-
-    total = len(filtered_rel_rows)
-    sliced = [_row_to_product(row) for row in filtered_rel_rows[offset : offset + limit]]
-    return sliced, total
-
-
 def get_related_products(
     product_id: str,
     page: int,
@@ -2648,26 +2966,13 @@ def get_related_products(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any] | None:
-    offset = max(page - 1, 0) * page_size
-    with get_connection() as connection:
-        items, total = _compute_related_scores(
-            connection,
-            product_id,
-            limit=page_size,
-            user_id=user_id,
-            session_id=session_id,
-            offset=offset,
-        )
-        if not total and not items:
-            return None
-        annotate_products_with_favorites(items, user_id, connection=connection)
-        return {
-            "items": items,
-            "page": page,
-            "pageSize": page_size,
-            "hasMore": page * page_size < total,
-            "total": total,
-        }
+    return find_related_products_hybrid(
+        product_id,
+        page=page,
+        page_size=page_size,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
 
 def _variant_summary_from_row(row: sqlite3.Row, current_product_id: str) -> dict[str, Any]:
@@ -2679,7 +2984,7 @@ def _variant_summary_from_row(row: sqlite3.Row, current_product_id: str) -> dict
         "attributes": product.get("variantAttributes") or {},
         "price": product["price"],
         "originalPrice": product.get("originalPrice"),
-        "imageUrl": product.get("sourceImageUrl") or product["imageUrl"],
+        "imageUrl": product["imageUrl"] or product.get("sourceImageUrl"),
         "imageGallery": product.get("imageGallery") or [],
         "isCurrent": product["id"] == current_product_id,
     }

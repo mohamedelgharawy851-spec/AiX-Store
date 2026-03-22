@@ -161,43 +161,68 @@ class CatalogJobRunner:
             return self._provider_map.get(aliased_provider)
         return None
 
-    def _related_search_query(self, product: dict[str, Any]) -> str:
+    def _related_search_queries(self, product: dict[str, Any]) -> list[str]:
         title = normalize_whitespace(product.get("name") or product.get("title"))
+        if not title:
+            return []
+        title_head = title
+        for marker in (" - ", ": ", " | ", " (", ", "):
+            if marker in title_head:
+                title_head = title_head.split(marker, 1)[0]
+        brand = normalize_whitespace(product.get("brand")).lower()
+        brand_token_list = [singularize_token(token) for token in tokenize(brand)]
+        brand_tokens = set(brand_token_list)
         filtered_tokens: list[str] = []
-        for token in tokenize(title):
+        for token in tokenize(title_head or title):
             normalized_token = singularize_token(token)
             if (
                 not normalized_token
                 or normalized_token in RELATED_SEARCH_TITLE_STOPWORDS
-                or any(character.isdigit() for character in normalized_token)
+                or normalized_token.isdigit()
             ):
                 continue
             if normalized_token not in filtered_tokens:
                 filtered_tokens.append(normalized_token)
-            if len(filtered_tokens) >= 3:
-                break
-        if filtered_tokens:
-            return " ".join(filtered_tokens)
-        return title
+        candidates: list[str] = []
+        seen: set[str] = set()
 
-    async def _search_related_products(
+        def add_candidate(value: str) -> None:
+            normalized_value = normalize_whitespace(value).lower()
+            if not normalized_value or normalized_value in seen:
+                return
+            seen.add(normalized_value)
+            candidates.append(normalized_value)
+
+        add_candidate(title_head)
+        if filtered_tokens:
+            add_candidate(" ".join(filtered_tokens[:5]))
+        if brand_tokens and filtered_tokens:
+            branded_tokens = [
+                *brand_token_list,
+                *[token for token in filtered_tokens if token not in brand_tokens][:4],
+            ]
+            add_candidate(" ".join(branded_tokens))
+        truncated_title_tokens = tokenize(title)
+        if truncated_title_tokens:
+            add_candidate(" ".join(truncated_title_tokens[:6]))
+        add_candidate(title)
+        return candidates
+
+    def _related_search_query(self, product: dict[str, Any]) -> str:
+        queries = self._related_search_queries(product)
+        return queries[0] if queries else normalize_whitespace(product.get("name") or product.get("title"))
+
+    def _build_related_payload(
         self,
         product: dict[str, Any],
         *,
+        payload: dict[str, Any],
         page: int,
         page_size: int,
-        user_id: str | None = None,
+        query: str,
     ) -> dict[str, Any]:
-        related_query = self._related_search_query(product)
-        payload = await self.search(
-            related_query,
-            page=page,
-            page_size=page_size + 2,
-            category_id=None,
-            user_id=user_id,
-        )
         filtered_items: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
+        seen_identities: set[str] = set()
         current_product_id = str(product.get("id") or "")
         current_present = False
         for item in payload.get("items", []):
@@ -207,9 +232,12 @@ class CatalogJobRunner:
             if item_id == current_product_id:
                 current_present = True
                 continue
-            if item_id in seen_ids:
+            provider_name = normalize_whitespace(item.get("provider")).lower()
+            family_key = normalize_whitespace(item.get("familyKey"))
+            item_identity = f"{provider_name}::{family_key}" if provider_name and family_key else item_id
+            if item_identity in seen_identities:
                 continue
-            seen_ids.add(item_id)
+            seen_identities.add(item_identity)
             filtered_items.append(item)
             if len(filtered_items) >= page_size:
                 break
@@ -223,7 +251,39 @@ class CatalogJobRunner:
             "pageSize": page_size,
             "hasMore": total > (page * page_size),
             "total": total,
-            "query": related_query,
+            "query": query,
+        }
+
+    async def _search_related_products(
+        self,
+        product: dict[str, Any],
+        *,
+        page: int,
+        page_size: int,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        product_id = str(product.get("id") or "")
+        if not product_id:
+            return {
+                "items": [],
+                "page": page,
+                "pageSize": page_size,
+                "hasMore": False,
+                "total": 0,
+            }
+        return get_related_products(
+            product_id,
+            page=page,
+            page_size=page_size,
+            user_id=user_id,
+            session_id=session_id,
+        ) or {
+            "items": [],
+            "page": page,
+            "pageSize": page_size,
+            "hasMore": False,
+            "total": 0,
         }
 
     def _provider_sequence(self, provider_names: list[str] | tuple[str, ...] | None = None):
@@ -1771,7 +1831,7 @@ class CatalogJobRunner:
                 message="Served from existing products in the database.",
             )
 
-        if payload.get("total", 0):
+        if page == 1 and payload.get("total", 0):
             payload["hasMore"] = payload["hasMore"] or self._cursor_has_more(cursor)
             return finalize_stage_one(
                 payload,
@@ -1997,7 +2057,13 @@ class CatalogJobRunner:
         if not detail:
             return None
         try:
-            related_payload = await self._search_related_products(detail, page=1, page_size=6, user_id=user_id)
+            related_payload = await self._search_related_products(
+                detail,
+                page=1,
+                page_size=6,
+                user_id=user_id,
+                session_id=session_id,
+            )
             detail["relatedProducts"] = related_payload["items"]
         except Exception:
             detail["relatedProducts"] = []
@@ -2014,7 +2080,13 @@ class CatalogJobRunner:
         product = get_product(product_id, user_id=user_id)
         if not product:
             return None
-        payload = await self._search_related_products(product, page=page, page_size=page_size, user_id=user_id)
+        payload = await self._search_related_products(
+            product,
+            page=page,
+            page_size=page_size,
+            user_id=user_id,
+            session_id=session_id,
+        )
         return payload if payload.get("items") else {
             "items": [],
             "page": page,
