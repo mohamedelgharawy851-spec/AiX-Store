@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import logging
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
@@ -29,6 +30,7 @@ INSERT_OR_REPLACE_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 NAMED_PLACEHOLDER_PATTERN = re.compile(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)")
+_POOL: ConnectionPool | None = None
 
 
 def postgres_enabled() -> bool:
@@ -145,25 +147,37 @@ class PostgresConnectionWrapper:
         self._connection.rollback()
 
 
+def _get_pool() -> ConnectionPool:
+    global _POOL
+    if _POOL is None:
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL is not configured")
+        _POOL = ConnectionPool(
+            conninfo=DATABASE_URL,
+            min_size=1,
+            max_size=3,
+            reconnect_failed=lambda pool: None,
+            check=ConnectionPool.check_connection,
+            kwargs={
+                "row_factory": dict_row,
+                "prepare_threshold": None,
+                "autocommit": False,
+            },
+        )
+    return _POOL
+
+
 @contextmanager
 def get_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not configured")
-    
-    # Supabase connection should be opened fresh and closed promptly.
-    conn = psycopg.connect(
-        conninfo=DATABASE_URL,
-        row_factory=dict_row,
-        prepare_threshold=None,
-        autocommit=False
-    )
-    try:
-        yield PostgresConnectionWrapper(conn)
-        if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-            conn.commit()
-    except Exception:
-        if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-            conn.rollback()
-        raise
-    finally:
-        conn.close()
+
+    with _get_pool().connection() as conn:
+        try:
+            yield PostgresConnectionWrapper(conn)
+            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                conn.commit()
+        except Exception:
+            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                conn.rollback()
+            raise

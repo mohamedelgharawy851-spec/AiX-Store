@@ -3312,7 +3312,10 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
 def list_user_recommendations(user_id: str, page: int, page_size: int, session_id: str | None = None) -> dict[str, Any]:
     offset = max(page - 1, 0) * page_size
     with get_connection() as connection:
-        refresh_user_recommendations(user_id, session_id=session_id)
+        try:
+            refresh_user_recommendations(user_id, session_id=session_id)
+        except Exception as exc:
+            logger.warning("Skipping recommendation refresh for user %s: %s", user_id, exc)
         rows = connection.execute(
             """
             SELECT p.*, ur.reason
