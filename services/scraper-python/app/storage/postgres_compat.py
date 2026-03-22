@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 from contextlib import contextmanager
@@ -9,7 +10,6 @@ from contextlib import contextmanager
 import logging
 import psycopg
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
 
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
@@ -30,7 +30,9 @@ INSERT_OR_REPLACE_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 NAMED_PLACEHOLDER_PATTERN = re.compile(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)")
-_POOL: ConnectionPool | None = None
+logger = logging.getLogger(__name__)
+_CONNECTION: psycopg.Connection | None = None
+_CONNECTION_LOCK = threading.RLock()
 
 
 def postgres_enabled() -> bool:
@@ -141,30 +143,43 @@ class PostgresConnectionWrapper:
                 cursor.execute(statement)
 
     def commit(self) -> None:
-        self._connection.commit()
+        if not self._connection.autocommit:
+            self._connection.commit()
 
     def rollback(self) -> None:
-        self._connection.rollback()
+        if not self._connection.autocommit:
+            self._connection.rollback()
 
 
-def _get_pool() -> ConnectionPool:
-    global _POOL
-    if _POOL is None:
-        if not DATABASE_URL:
-            raise RuntimeError("DATABASE_URL is not configured")
-        _POOL = ConnectionPool(
-            conninfo=DATABASE_URL,
-            min_size=1,
-            max_size=3,
-            reconnect_failed=lambda pool: None,
-            check=ConnectionPool.check_connection,
-            kwargs={
-                "row_factory": dict_row,
-                "prepare_threshold": None,
-                "autocommit": False,
-            },
+def _reset_connection() -> None:
+    global _CONNECTION
+    if _CONNECTION is not None:
+        try:
+            _CONNECTION.close()
+        except Exception:
+            logger.debug("Failed closing stale Postgres connection", exc_info=True)
+    _CONNECTION = None
+
+
+def _connection_is_unusable(connection: psycopg.Connection | None) -> bool:
+    if connection is None:
+        return True
+    return bool(getattr(connection, "closed", False) or getattr(connection, "broken", False))
+
+
+def _ensure_connection() -> psycopg.Connection:
+    global _CONNECTION
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    if _connection_is_unusable(_CONNECTION):
+        _reset_connection()
+        _CONNECTION = psycopg.connect(
+            DATABASE_URL,
+            row_factory=dict_row,
+            prepare_threshold=None,
+            autocommit=True,
         )
-    return _POOL
+    return _CONNECTION
 
 
 @contextmanager
@@ -172,12 +187,10 @@ def get_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not configured")
 
-    with _get_pool().connection() as conn:
+    with _CONNECTION_LOCK:
+        conn = _ensure_connection()
         try:
             yield PostgresConnectionWrapper(conn)
-            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-                conn.commit()
         except Exception:
-            if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
-                conn.rollback()
+            _reset_connection()
             raise

@@ -3359,76 +3359,87 @@ def list_user_recommendations(user_id: str, page: int, page_size: int, session_i
 
 def list_user_history(user_id: str, page: int, page_size: int, session_id: str | None = None) -> dict[str, Any]:
     offset = max(page - 1, 0) * page_size
-    with get_connection() as connection:
-        event_filter, params = _event_filter_clause(session_id)
-        all_rows = connection.execute(
-            f"""
-            SELECT ue.*, p.title AS product_title, p.category AS product_category
-            FROM user_events ue
-            LEFT JOIN products p ON p.id = ue.product_id
-            WHERE ue.user_id = ?{event_filter}
-              AND ue.event_type IN ('search', 'product_view')
-            ORDER BY ue.created_at DESC
-            """,
-            (user_id, *params),
-        ).fetchall()
-        rows: list[sqlite3.Row] = []
-        seen_history_keys: set[str] = set()
-        for row in all_rows:
-            history_key = (
-                f"search::{normalize_whitespace(row['query_text']).lower()}"
-                if str(row["event_type"]) == "search"
-                else f"product::{normalize_whitespace(row['product_id'])}"
-            )
-            if history_key in seen_history_keys:
-                continue
-            seen_history_keys.add(history_key)
-            rows.append(row)
-        items = []
-        for row in rows[offset : offset + page_size]:
-            event_type = str(row["event_type"])
-            product_snapshot = _restore_snapshot(row["product_snapshot_json"])
-            title = (
-                row["product_title"]
-                or (product_snapshot or {}).get("name")
-                or row["query_text"]
-                or category_name(str(row["category_id"] or "others"))
-            )
-            source_host = ""
-            effective_source_url = normalize_whitespace(
-                row["source_url"] or row["canonical_source_url"] or (product_snapshot or {}).get("sourceUrl")
-            )
-            if effective_source_url:
-                parts = effective_source_url.split("/")
-                source_host = parts[2] if len(parts) > 2 else normalize_whitespace(row["source_url"])
-            subtitle = {
-                "search": f'Searched for "{row["query_text"]}"',
-                "product_view": f'Viewed {row["product_category"] or (product_snapshot or {}).get("category") or "product"}',
-                "source_open": f"Opened seller page on {source_host or 'store'}",
-                "category_view": f'Browsed {category_name(str(row["category_id"] or "others"))}',
-            }.get(event_type, event_type.replace("_", " ").title())
-            items.append(
-                {
-                    "id": row["id"],
-                    "type": event_type,
-                    "title": title,
-                    "subtitle": subtitle,
-                    "productId": row["product_id"],
-                    "categoryId": row["category_id"],
-                    "queryText": row["query_text"],
-                    "sourceUrl": effective_source_url or None,
-                    "canonicalSourceUrl": normalize_whitespace(
-                        row["canonical_source_url"] or (product_snapshot or {}).get("sourceUrl")
-                    )
-                    or None,
-                    "productSnapshot": product_snapshot,
-                    "createdAt": row["created_at"],
-                }
-            )
-        total = len(rows)
+    try:
+        with get_connection() as connection:
+            event_filter, params = _event_filter_clause(session_id)
+            all_rows = connection.execute(
+                f"""
+                SELECT ue.*, p.title AS product_title, p.category AS product_category
+                FROM user_events ue
+                LEFT JOIN products p ON p.id = ue.product_id
+                WHERE ue.user_id = ?{event_filter}
+                  AND ue.event_type IN ('search', 'product_view')
+                ORDER BY ue.created_at DESC
+                """,
+                (user_id, *params),
+            ).fetchall()
+            rows: list[sqlite3.Row] = []
+            seen_history_keys: set[str] = set()
+            for row in all_rows:
+                history_key = (
+                    f"search::{normalize_whitespace(row['query_text']).lower()}"
+                    if str(row["event_type"]) == "search"
+                    else f"product::{normalize_whitespace(row['product_id'])}"
+                )
+                if history_key in seen_history_keys:
+                    continue
+                seen_history_keys.add(history_key)
+                rows.append(row)
+            items = []
+            for row in rows[offset : offset + page_size]:
+                event_type = str(row["event_type"])
+                product_snapshot = _restore_snapshot(row["product_snapshot_json"])
+                title = (
+                    row["product_title"]
+                    or (product_snapshot or {}).get("name")
+                    or row["query_text"]
+                    or category_name(str(row["category_id"] or "others"))
+                )
+                source_host = ""
+                effective_source_url = normalize_whitespace(
+                    row["source_url"] or row["canonical_source_url"] or (product_snapshot or {}).get("sourceUrl")
+                )
+                if effective_source_url:
+                    parts = effective_source_url.split("/")
+                    source_host = parts[2] if len(parts) > 2 else normalize_whitespace(row["source_url"])
+                subtitle = {
+                    "search": f'Searched for "{row["query_text"]}"',
+                    "product_view": f'Viewed {row["product_category"] or (product_snapshot or {}).get("category") or "product"}',
+                    "source_open": f"Opened seller page on {source_host or 'store'}",
+                    "category_view": f'Browsed {category_name(str(row["category_id"] or "others"))}',
+                }.get(event_type, event_type.replace("_", " ").title())
+                items.append(
+                    {
+                        "id": row["id"],
+                        "type": event_type,
+                        "title": title,
+                        "subtitle": subtitle,
+                        "productId": row["product_id"],
+                        "categoryId": row["category_id"],
+                        "queryText": row["query_text"],
+                        "sourceUrl": effective_source_url or None,
+                        "canonicalSourceUrl": normalize_whitespace(
+                            row["canonical_source_url"] or (product_snapshot or {}).get("sourceUrl")
+                        )
+                        or None,
+                        "productSnapshot": product_snapshot,
+                        "createdAt": row["created_at"],
+                    }
+                )
+            total = len(rows)
+            return {
+                "items": items,
+                "page": page,
+                "pageSize": page_size,
+                "total": total,
+                "hasMore": page * page_size < total,
+            }
+    except Exception as exc:
+        logger.warning("Falling back to empty history for user %s: %s", user_id, exc)
         return {
-            "items": items,
+            "items": [],
             "page": page,
             "pageSize": page_size,
-            "hasMore": page * page_size < total,
+            "total": 0,
+            "hasMore": False,
         }

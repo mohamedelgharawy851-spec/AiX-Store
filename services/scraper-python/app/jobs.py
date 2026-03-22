@@ -1578,6 +1578,29 @@ class CatalogJobRunner:
             "latencyMs": None,
             "fallbackReason": "AI assist is disabled in the live search pipeline.",
         }
+
+        def finalize_stage_one(payload: dict[str, Any], message: str | None = None) -> dict[str, Any]:
+            payload["contextKey"] = context_key
+            payload["contextType"] = "search"
+            payload["appliedQuery"] = query
+            payload["appliedCategoryId"] = category_id
+            payload["strictCategory"] = bool(category_id)
+            payload["queryVariants"] = payload.get("queryVariants") or provider_variants
+            payload["matching"] = payload.get("matching") or {
+                "source": "cached_fallback",
+                "exactMatchCount": len(payload.get("items") or []),
+                "filteredOutCount": 0,
+            }
+            payload["enrichment"] = {
+                "state": "idle",
+                "sourceProviders": [],
+                "lastUpdatedAt": payload.get("metadata", {}).get("last_completed_at") if payload.get("metadata") else None,
+                "message": message,
+            }
+            payload["ai"] = ai_payload
+            payload["discovery"] = discovery_payload
+            return payload
+
         metadata = get_query_metadata(context_key) or {}
         stored_variants = metadata.get("query_variants_json")
         if stored_variants and _decode_string_list(stored_variants) != provider_variants:
@@ -1627,14 +1650,18 @@ class CatalogJobRunner:
             exact_cached["discovery"] = discovery_payload
             return exact_cached
 
-        if page == 1 and not payload["items"] and exact_cached["items"]:
-            payload = exact_cached
-            payload["contextKey"] = context_key
-            payload["contextType"] = "search"
-            payload["appliedQuery"] = query
-            payload["appliedCategoryId"] = category_id
-            payload["strictCategory"] = bool(category_id)
-            payload["queryVariants"] = provider_variants
+        if exact_cached.get("total", 0):
+            return finalize_stage_one(
+                exact_cached,
+                message="Served from existing products in the database.",
+            )
+
+        if payload.get("total", 0):
+            payload["hasMore"] = payload["hasMore"] or self._cursor_has_more(cursor)
+            return finalize_stage_one(
+                payload,
+                message="Served from stored search results in the database.",
+            )
 
         if page > 1:
             if count_query_results(context_key) == 0:
