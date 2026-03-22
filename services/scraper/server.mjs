@@ -34,6 +34,8 @@ const FASTAPI_URL = (process.env.AIXSTORE_FASTAPI_URL || "").trim().replace(/\/+
 const PYTHON_HOST = process.env.AIXSTORE_PYTHON_HOST || "127.0.0.1";
 const PYTHON_PORT = Number(process.env.AIXSTORE_PYTHON_PORT || 8790);
 const PYTHON_BASE_URL = FASTAPI_URL || `http://${PYTHON_HOST}:${PYTHON_PORT}`;
+const UPSTREAM_STARTING_MESSAGE = "Backend is starting up, please try again in 10 seconds";
+const HF_KEEP_ALIVE_MS = 4 * 60 * 1000;
 
 console.log(`[config] upstream FastAPI  : ${PYTHON_BASE_URL}`);
 console.log(`[config] runtime port      : ${RUNTIME_PORT}`);
@@ -56,6 +58,10 @@ function sendJson(response, statusCode, payload) {
     }),
   );
   response.end(JSON.stringify(payload));
+}
+
+function upstreamStartingPayload() {
+  return { error: UPSTREAM_STARTING_MESSAGE };
 }
 
 function runtimeOrigin(request) {
@@ -194,6 +200,51 @@ async function fetchUpstream(
   return makeRequest();
 }
 
+async function wakeUpFastApi(reason = "warmup") {
+  if (!FASTAPI_URL) {
+    return;
+  }
+  try {
+    await fetch(`${PYTHON_BASE_URL}/health`, {
+      headers: { accept: "application/json" },
+    });
+    console.log(`[upstream] wake ping ok reason=${reason}`);
+  } catch (err) {
+    console.warn(`[upstream] wake ping failed reason=${reason}`, err);
+  }
+}
+
+async function decodeJsonUpstream(upstream, pathname) {
+  const contentType = (upstream.headers.get("content-type") || "").toLowerCase();
+  const rawText = await upstream.text();
+  const trimmed = rawText.trimStart();
+
+  if (
+    contentType.includes("text/html") ||
+    trimmed.startsWith("<!DOCTYPE") ||
+    trimmed.startsWith("<html")
+  ) {
+    console.warn(
+      `[upstream] html startup page ${pathname} status=${upstream.status} contentType=${contentType || "unknown"}`,
+    );
+    return { isStartingUp: true, payload: null };
+  }
+
+  if (!rawText) {
+    return { isStartingUp: false, payload: {} };
+  }
+
+  try {
+    return { isStartingUp: false, payload: JSON.parse(rawText) };
+  } catch (err) {
+    console.error(
+      `[upstream] invalid json ${pathname} status=${upstream.status} contentType=${contentType || "unknown"}`,
+      err,
+    );
+    throw err;
+  }
+}
+
 async function proxyJson(request, response, pathname, decorate, search = "") {
   const body = request.method && !["GET", "HEAD"].includes(request.method) ? await readRequestBody(request) : null;
   const policy = upstreamPolicy(pathname, request.method || "GET");
@@ -209,8 +260,20 @@ async function proxyJson(request, response, pathname, decorate, search = "") {
     timeoutMs: policy.timeoutMs,
     retryCount: policy.retryCount,
   });
-  const payload = await upstream.json();
+  const decoded = await decodeJsonUpstream(upstream, pathname);
+  if (decoded.isStartingUp) {
+    sendJson(response, 503, upstreamStartingPayload());
+    return;
+  }
+  const payload = decoded.payload;
   sendJson(response, upstream.status, decorate ? decorate(request, payload) : payload);
+}
+
+if (FASTAPI_URL) {
+  void wakeUpFastApi("startup");
+  setInterval(() => {
+    void wakeUpFastApi("keepalive");
+  }, HF_KEEP_ALIVE_MS);
 }
 
 async function proxyImage(response, imageKey) {
@@ -268,7 +331,12 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 503, { status: "error", service: "catalog-runtime", upstream: "unhealthy" });
         return;
       }
-      const payload = await upstream.json();
+      const decoded = await decodeJsonUpstream(upstream, "/health");
+      if (decoded.isStartingUp) {
+        sendJson(response, 503, { status: "error", service: "catalog-runtime", upstream: upstreamStartingPayload() });
+        return;
+      }
+      const payload = decoded.payload;
       sendJson(response, 200, { status: "ok", service: "catalog-runtime", upstream: payload });
       return;
     }
