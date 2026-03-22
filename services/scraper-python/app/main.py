@@ -25,7 +25,7 @@ load_dotenv(dotenv_path=_dotenv_path())
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from .ai.config import AI_ENABLED, AI_MODE, AI_MODEL_ID, ai_pipeline_is_enabled
 from .ai.model_manager import model_manager
@@ -428,8 +428,13 @@ async def cached_image(local_image_key: str):
     if not file_path:
         source_image_url = get_source_image_url(local_image_key)
         if source_image_url:
-            await cache_image(source_image_url)
+            try:
+                await cache_image(source_image_url)
+            except Exception:
+                logger.warning("Image cache warm failed for %s", source_image_url, exc_info=True)
             file_path = resolve_image_path(local_image_key)
+            if not file_path:
+                return RedirectResponse(source_image_url)
     if not file_path:
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(file_path)

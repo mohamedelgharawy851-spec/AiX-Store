@@ -2083,6 +2083,40 @@ def filter_related_product_candidates(anchor_product: dict[str, Any], candidates
     return _dedupe_product_list(filtered)
 
 
+def _general_related_search_query(record: sqlite3.Row | dict[str, Any]) -> str:
+    title = normalize_whitespace(_record_value(record, "title", "name"))
+    brand = normalize_whitespace(_record_value(record, "brand"))
+    variant_label = normalize_whitespace(_record_value(record, "variant_label", "variantLabel"))
+    cleaned_title = title
+    if variant_label:
+        cleaned_title = re.sub(rf"\b{re.escape(variant_label)}\b", " ", cleaned_title, flags=re.IGNORECASE)
+    cleaned_title = PACK_COUNT_PATTERN.sub(" ", cleaned_title)
+    cleaned_title = VARIANT_SIZE_PATTERN.sub(" ", cleaned_title)
+    ordered_tokens: list[str] = []
+    if brand:
+        ordered_tokens.extend(tokenize(brand))
+    ordered_tokens.extend(
+        token
+        for token in tokenize(cleaned_title)
+        if token
+        and token not in VARIANT_COLOR_TERMS
+        and token not in FAMILY_NOISE_TERMS
+        and len(token) > 2
+        and not token.isdigit()
+    )
+    query_tokens: list[str] = []
+    seen_tokens: set[str] = set()
+    for token in ordered_tokens:
+        normalized_token = normalize_whitespace(token).lower()
+        if not normalized_token or normalized_token in seen_tokens:
+            continue
+        seen_tokens.add(normalized_token)
+        query_tokens.append(normalized_token)
+        if len(query_tokens) >= 6:
+            break
+    return normalize_whitespace(" ".join(query_tokens)) or normalize_whitespace(title)
+
+
 def _shared_query_count_lookup(
     connection: sqlite3.Connection,
     product_id: str,
@@ -2448,6 +2482,74 @@ def _compute_related_scores(
         affinity_lookup = preference_context["affinities"]
         recent_category_bias = preference_context["recentCategoryBias"]
         recent_tag_bias = preference_context["recentTagBias"]
+
+    stage_one_query = _general_related_search_query(product_row)
+    search_page_size = max((offset + limit) * 3, 24)
+    if stage_one_query:
+        stage_one_payload = search_cached_products(
+            stage_one_query,
+            page=1,
+            page_size=search_page_size,
+            category_id=current_category_id if strict_anchor_category else None,
+            user_id=user_id,
+        )
+        stage_one_candidates = [candidate for candidate in stage_one_payload.get("items", []) if candidate.get("id")]
+        if stage_one_candidates:
+            shared_query_counts = _shared_query_count_lookup(
+                connection,
+                product_id,
+                [str(candidate.get("id")) for candidate in stage_one_candidates if candidate.get("id")],
+            )
+            scored_candidates: list[tuple[float, dict[str, Any]]] = []
+            anchor_brand = normalize_whitespace(product_row["brand"]).lower()
+            for candidate in stage_one_candidates:
+                candidate_id = str(candidate.get("id") or "")
+                if not candidate_id or candidate_id == product_id:
+                    continue
+                shared_token_count, overlap_ratio = _related_overlap_metrics(product_row, candidate)
+                shared_query_count = shared_query_counts.get(candidate_id, 0)
+                if not _related_candidate_passes_threshold(
+                    product_row,
+                    candidate,
+                    shared_query_count=shared_query_count,
+                    shared_token_count=shared_token_count,
+                    overlap_ratio=overlap_ratio,
+                ):
+                    continue
+                candidate_tokens = _build_related_token_set(candidate)
+                score = float(candidate.get("score") or 0.0) * 12.0
+                score += shared_token_count * 10.0
+                score += overlap_ratio * 15.0
+                score += shared_query_count * 6.0
+                if anchor_brand and anchor_brand == normalize_whitespace(candidate.get("brand")).lower():
+                    score += 2.5
+                if user_id:
+                    score += affinity_lookup.get(("category", str(candidate.get("categoryId") or "").lower()), 0.0) * 0.7
+                    score += affinity_lookup.get(("brand", normalize_whitespace(candidate.get("brand")).lower()), 0.0) * 0.35
+                    score += sum(affinity_lookup.get(("tag", tag.lower()), 0.0) for tag in candidate_tokens) * 0.2
+                    score += recent_category_bias.get(str(candidate.get("categoryId") or "").lower(), 0.0) * 0.6
+                    score += sum(recent_tag_bias.get(tag.lower(), 0.0) for tag in candidate_tokens) * 0.15
+                scored_candidates.append((score, candidate))
+
+            scored_candidates.sort(
+                key=lambda item: (
+                    item[0],
+                    float(item[1].get("rating") or 0.0),
+                    int(item[1].get("reviewCount") or 0),
+                ),
+                reverse=True,
+            )
+            ranked_candidates: list[dict[str, Any]] = []
+            seen_keys: set[str] = set()
+            for _, candidate in scored_candidates:
+                key = _product_identity_key(candidate)
+                if not key or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                ranked_candidates.append(candidate)
+            if ranked_candidates:
+                total = len(ranked_candidates)
+                return ranked_candidates[offset : offset + limit], total
 
     # Fetch candidates from the same category when classification is strong.
     # For weakly classified anchors, rely on stronger token/query overlap instead of broad category fallback.

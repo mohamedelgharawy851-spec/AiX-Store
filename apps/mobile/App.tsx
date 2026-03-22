@@ -650,6 +650,11 @@ function OfferCardTile({
 
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.offerCard, pressed && styles.pressedCard]}>
+      {discount > 0 ? (
+        <View style={styles.offerDiscountBadge}>
+          <Text style={styles.productDiscountText}>{discount}% OFF</Text>
+        </View>
+      ) : null}
       <Pressable
         onPress={(event) => {
           event.stopPropagation();
@@ -670,7 +675,6 @@ function OfferCardTile({
         style={styles.offerImage}
       />
       <View style={styles.offerBody}>
-        {discount > 0 ? <Text style={styles.offerDiscount}>{discount}% OFF</Text> : null}
         <Text numberOfLines={1} style={styles.offerTitle}>
           {product.name}
         </Text>
@@ -1803,6 +1807,7 @@ export default function App() {
   const [activeCatalogContextKey, setActiveCatalogContextKey] = useState("home");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchInputValue, setSearchInputValue] = useState("");
+  const [searchRefreshSignal, setSearchRefreshSignal] = useState(0);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [catalogScrollToTopSignal, setCatalogScrollToTopSignal] = useState(0);
   const [recommendations, setRecommendations] = useState<Product[]>([]);
@@ -2744,7 +2749,7 @@ export default function App() {
     const nextContextKey = expectedCatalogContextKey(normalizedQuery, selectedCategoryId);
     setActiveCatalogContextKey(nextContextKey);
     void loadCatalogPage(normalizedQuery, selectedCategoryId, 1);
-  }, [authState, catalogHydrated, searchQuery, selectedCategoryId]);
+  }, [authState, catalogHydrated, searchQuery, searchRefreshSignal, selectedCategoryId]);
 
   useEffect(() => {
     if (authState !== "signedIn" || !currentUser) {
@@ -2782,6 +2787,7 @@ export default function App() {
       catalogHydrated,
     });
     const nextQuery = searchInputValue.trim();
+    setSearchRefreshSignal((current) => current + 1);
     setSearchQuery(nextQuery);
     if (!nextQuery) {
       setActiveCatalogContextKey(expectedCatalogContextKey("", selectedCategoryId));
@@ -3214,6 +3220,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     marginBottom: 4,
+  },
+  offerDiscountBadge: {
+    backgroundColor: "#2563EB",
+    borderRadius: 999,
+    left: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    position: "absolute",
+    top: spacing.sm,
+    zIndex: 2,
   },
   offerTitle: {
     color: colors.text,
@@ -3845,10 +3861,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   aixHeroCard: {
-    backgroundColor: "#0D5A49",
+    backgroundColor: "#1D4ED8",
     borderRadius: 32,
     borderWidth: 1,
-    borderColor: "rgba(217,255,244,0.12)",
+    borderColor: "rgba(219,234,254,0.18)",
     gap: spacing.sm,
     overflow: "hidden",
     padding: spacing.lg,
@@ -3858,7 +3874,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   aixHeroWave: {
-    backgroundColor: "rgba(158,247,214,0.22)",
+    backgroundColor: "rgba(147,197,253,0.28)",
     borderRadius: 48,
     height: 220,
     position: "absolute",
@@ -3871,21 +3887,21 @@ const styles = StyleSheet.create({
     position: "absolute",
   },
   aixHeroOrbPrimary: {
-    backgroundColor: "rgba(229,255,248,0.18)",
+    backgroundColor: "rgba(239,246,255,0.2)",
     height: 128,
     left: -18,
     top: 112,
     width: 128,
   },
   aixHeroOrbSecondary: {
-    backgroundColor: "rgba(110,231,183,0.18)",
+    backgroundColor: "rgba(96,165,250,0.2)",
     height: 86,
     right: 36,
     top: 118,
     width: 86,
   },
   aixHeroSpark: {
-    backgroundColor: "rgba(226,255,246,0.62)",
+    backgroundColor: "rgba(219,234,254,0.72)",
     borderRadius: 999,
     height: 22,
     position: "absolute",
@@ -3894,7 +3910,7 @@ const styles = StyleSheet.create({
     width: 22,
   },
   aixHeroEyebrow: {
-    color: "rgba(236,255,249,0.74)",
+    color: "rgba(219,234,254,0.82)",
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 1.1,
@@ -3907,7 +3923,7 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   aixHeroBody: {
-    color: "rgba(239,255,250,0.88)",
+    color: "rgba(239,246,255,0.9)",
     fontSize: 14,
     lineHeight: 20,
     maxWidth: "76%",
@@ -3916,7 +3932,7 @@ const styles = StyleSheet.create({
   aixHeroButton: {
     alignItems: "center",
     alignSelf: "flex-start",
-    backgroundColor: "#D9FFF4",
+    backgroundColor: "#EFF6FF",
     borderRadius: 16,
     marginTop: spacing.sm,
     paddingHorizontal: spacing.lg,
@@ -3924,7 +3940,7 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   aixHeroButtonText: {
-    color: "#0D5A49",
+    color: "#1D4ED8",
     fontSize: 14,
     fontWeight: "800",
   },

@@ -52,15 +52,18 @@ async def cache_image(image_url: str) -> dict | None:
     headers = {"user-agent": USER_AGENTS[0], "accept": "image/avif,image/webp,image/*,*/*;q=0.8"}
     transport_args = {"proxy": PROXY_URL} if PROXY_URL else {}
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True, **transport_args) as client:
-        response = await client.get(normalized_url, headers=headers)
-        response.raise_for_status()
-        content_type = response.headers.get("content-type", "")
-        if "image" not in content_type:
-            return None
-        content = response.content
-        if not content:
-            return None
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS, follow_redirects=True, **transport_args) as client:
+            response = await client.get(normalized_url, headers=headers)
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            if "image" not in content_type:
+                return None
+            content = response.content
+            if not content:
+                return None
+    except (httpx.HTTPError, OSError):
+        return None
 
     from io import BytesIO
 
