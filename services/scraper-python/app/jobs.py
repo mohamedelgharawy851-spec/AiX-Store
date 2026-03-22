@@ -1549,6 +1549,8 @@ class CatalogJobRunner:
         provider_variants = expand_query_variants(normalized_query, category_id)
         discovery_variants = expand_discovery_variants(normalized_query, category_id)
         query_classification = classify_category(normalized_query)
+        min_stage1_results = 5
+        min_stage1_similarity_score = 0.3
         pipeline_ai_enabled = ai_pipeline_is_enabled()
         discovery_payload = {
             "enabled": discovery_is_active(),
@@ -1650,7 +1652,25 @@ class CatalogJobRunner:
             exact_cached["discovery"] = discovery_payload
             return exact_cached
 
-        if exact_cached.get("total", 0):
+        exact_cached_matching = exact_cached.get("matching") or {}
+        stage1_results = exact_cached.get("items") or []
+        stage1_good_results = [
+            item for item in stage1_results if float(item.get("score") or 0.0) >= min_stage1_similarity_score
+        ]
+        stage1_good_result_count = int(exact_cached_matching.get("goodResultCount") or len(stage1_good_results))
+        stage1_average_score = float(exact_cached_matching.get("averageScore") or 0.0)
+        exact_cached_matching["goodResultCount"] = stage1_good_result_count
+        exact_cached_matching["minResultsThreshold"] = min_stage1_results
+        exact_cached_matching["minSimilarityThreshold"] = min_stage1_similarity_score
+        exact_cached["matching"] = exact_cached_matching
+
+        stage1_is_strong = (
+            int(exact_cached.get("total", 0) or 0) >= min_stage1_results
+            and stage1_good_result_count >= min_stage1_results
+            and stage1_average_score >= min_stage1_similarity_score
+        )
+
+        if stage1_is_strong:
             return finalize_stage_one(
                 exact_cached,
                 message="Served from existing products in the database.",

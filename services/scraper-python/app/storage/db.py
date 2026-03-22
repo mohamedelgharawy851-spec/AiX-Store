@@ -1944,6 +1944,12 @@ def _query_specific_adjustment(normalized_query: str, haystack: str) -> tuple[fl
     return score, strong_match
 
 
+def _normalize_search_score(score: float) -> float:
+    if score <= 0:
+        return 0.0
+    return round(min(score / 10.0, 1.0), 4)
+
+
 def search_cached_products(
     query: str,
     page: int,
@@ -2032,8 +2038,15 @@ def search_cached_products(
             if score > 0:
                 scored.append((score, row))
         scored.sort(key=lambda item: (item[0], float(item[1]["rating"] or 0.0), item[1]["updated_at"]), reverse=True)
-        ranked_rows = [row for _, row in scored]
-        products = annotate_products_with_favorites([_row_to_product(row) for row in ranked_rows], user_id, connection=connection)
+        products: list[dict[str, Any]] = []
+        normalized_scores: list[float] = []
+        for raw_score, row in scored:
+            product = _row_to_product(row)
+            product["score"] = _normalize_search_score(raw_score)
+            normalized_scores.append(float(product["score"]))
+            products.append(product)
+        good_result_count = sum(1 for score in normalized_scores if score >= 0.3)
+        products = annotate_products_with_favorites(products, user_id, connection=connection)
         offset = max(page - 1, 0) * page_size
         payload = _catalog_response(
             connection,
@@ -2051,6 +2064,9 @@ def search_cached_products(
                 "source": "cached_fallback",
                 "exactMatchCount": exact_match_count,
                 "filteredOutCount": 0,
+                "goodResultCount": good_result_count,
+                "averageScore": round(sum(normalized_scores) / len(normalized_scores), 4) if normalized_scores else 0.0,
+                "topScore": normalized_scores[0] if normalized_scores else 0.0,
             },
             dedupe_items=False,
         )
