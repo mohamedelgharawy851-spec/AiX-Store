@@ -1,6 +1,6 @@
 import { NativeModules } from "react-native";
 
-const DEFAULT_RUNTIME_PORT = 8787;
+const DEFAULT_RUNTIME_PORT = 7860;
 const DEFAULT_PRODUCTION_RUNTIME_URL = "https://shadypro-aixstore-runtime.hf.space";
 const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
 const runtimeOverride = (process.env.EXPO_PUBLIC_AIXSTORE_RUNTIME_URL ?? "").trim();

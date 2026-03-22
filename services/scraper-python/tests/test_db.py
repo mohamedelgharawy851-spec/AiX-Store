@@ -242,6 +242,173 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(remaining_search_events, 1)
             self.assertEqual(remaining_product_events, 0)
 
+    def test_initialize_database_clears_stale_related_caches_only(self):
+        anchor = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-cube/-/A-5011",
+            canonical_source_url="https://www.target.com/p/demo-cube/-/A-5011",
+            title="Demo Cube Puzzle",
+            description="Puzzle cube used for related cache invalidation testing",
+            price=14.99,
+            currency="USD",
+            category_id="toys",
+            category="Toys",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-cube.jpg",
+            rating=4.6,
+            review_count=18,
+            tags=["cube", "puzzle", "toy"],
+        )
+        related = ProviderProduct(
+            provider="Walmart",
+            source_url="https://www.walmart.com/ip/demo-speed-cube/5012",
+            canonical_source_url="https://www.walmart.com/ip/demo-speed-cube/5012",
+            title="Demo Speed Cube",
+            description="Speed cube match for related cache invalidation testing",
+            price=12.99,
+            currency="USD",
+            category_id="others",
+            category="Others",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-speed-cube.jpg",
+            rating=4.4,
+            review_count=11,
+            tags=["cube", "speed cube", "puzzle"],
+        )
+        product_ids = db_module.upsert_products(
+            [anchor, related],
+            {
+                anchor.source_image_url: {
+                    "local_image_key": "img-demo-cube",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                related.source_image_url: {
+                    "local_image_key": "img-demo-speed-cube",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+
+        db_module.save_query_results("speaker", "speaker", page_number=1, provider="cache", product_ids=[product_ids[0]])
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO related_products (product_id, related_product_id, score, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (product_ids[0], product_ids[1], 8.9, "Stale related cache row"),
+            )
+            connection.execute(
+                """
+                INSERT INTO queries (
+                  normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at,
+                  last_completed_at, last_error, next_page_token_json, query_variants_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"related::{product_ids[0]}",
+                    anchor.title,
+                    "related",
+                    None,
+                    "success",
+                    db_module.now_iso(),
+                    None,
+                    db_module.now_iso(),
+                    None,
+                    None,
+                    "[]",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO query_products (normalized_query, product_id, rank, page_number, provider, discovered_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"related::{product_ids[0]}",
+                    product_ids[1],
+                    1,
+                    1,
+                    "cache",
+                    db_module.now_iso(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO discovery_queries (
+                  context_key, variant_text, query_text, category_id, provider, request_json,
+                  engines_json, status, last_requested_at, last_completed_at, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"related::{product_ids[0]}",
+                    "demo cube",
+                    "demo cube",
+                    None,
+                    "apify",
+                    "{}",
+                    "[]",
+                    "success",
+                    db_module.now_iso(),
+                    db_module.now_iso(),
+                    None,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO discovery_hits (
+                  id, context_key, variant_text, rank, engine, source, source_title, source_snippet, source_rank,
+                  domain, title, snippet, url, normalized_url, provider_name, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dh-related-stale",
+                    f"related::{product_ids[0]}",
+                    "demo cube",
+                    1,
+                    "google-search-scraper",
+                    "organic",
+                    related.title,
+                    related.description,
+                    1,
+                    "walmart.com",
+                    related.title,
+                    related.description,
+                    related.source_url,
+                    related.canonical_source_url,
+                    "walmart_requests",
+                    db_module.now_iso(),
+                ),
+            )
+            connection.commit()
+
+        db_module.initialize_database()
+
+        with db_module.get_connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM products").fetchone()[0], 2)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM related_products").fetchone()[0], 0)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM queries WHERE normalized_query LIKE 'related::%'").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM query_products WHERE normalized_query LIKE 'related::%'").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM discovery_queries WHERE context_key LIKE 'related::%'").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM discovery_hits WHERE context_key LIKE 'related::%'").fetchone()[0],
+                0,
+            )
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM queries WHERE normalized_query = 'speaker'").fetchone()[0], 1)
+
     def test_upsert_skips_zero_price_and_sanitizes_impossible_discounts(self):
         invalid = ProviderProduct(
             provider="Amazon",
@@ -1564,6 +1731,96 @@ class DatabaseTests(unittest.TestCase):
 
         assert related is not None
         self.assertEqual([item["id"] for item in related["items"]], [product_ids[1]])
+
+    def test_search_driven_related_results_beat_cached_interest_graph_matches(self):
+        anchor = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
+            canonical_source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
+            title="Rubik's Cube The Original 3x3 Cube",
+            description="Classic Rubik puzzle cube brain teaser and fidget toy",
+            price=10.49,
+            currency="USD",
+            category_id="toys",
+            category="Toys",
+            brand="Spin Master",
+            source_image_url="https://images.example.com/rubiks-cube-classic.jpg",
+            rating=4.8,
+            review_count=120,
+            tags=["rubik", "cube", "puzzle", "brain teaser"],
+        )
+        search_match = ProviderProduct(
+            provider="Walmart",
+            source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
+            canonical_source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
+            title="Rubik's 3x3 Speed Cube",
+            description="Magnetic Rubik speed cube for fast solving",
+            price=14.99,
+            currency="USD",
+            category_id="others",
+            category="Others",
+            brand="Rubik's",
+            source_image_url="https://images.example.com/rubiks-speed-cube.jpg",
+            rating=4.6,
+            review_count=58,
+            tags=["rubik", "cube", "speed cube", "puzzle"],
+        )
+        cached_interest_graph_match = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/lego-batmobile/-/A-7303",
+            canonical_source_url="https://www.target.com/p/lego-batmobile/-/A-7303",
+            title="LEGO DC Batman Batmobile",
+            description="Creative building toy for Batman fans",
+            price=29.99,
+            currency="USD",
+            category_id="toys",
+            category="Toys",
+            brand="LEGO",
+            source_image_url="https://images.example.com/lego-batmobile.jpg",
+            rating=4.8,
+            review_count=92,
+            tags=["lego", "building toy", "batman"],
+        )
+        product_ids = db_module.upsert_products(
+            [anchor, search_match, cached_interest_graph_match],
+            {
+                anchor.source_image_url: {
+                    "local_image_key": "img-rubiks-cube-classic",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                search_match.source_image_url: {
+                    "local_image_key": "img-rubiks-speed-cube",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                cached_interest_graph_match.source_image_url: {
+                    "local_image_key": "img-lego-batmobile",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO related_products (product_id, related_product_id, score, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (product_ids[0], product_ids[2], 9.7, "Interest graph toy match"),
+            )
+            connection.commit()
+
+        related = db_module.get_related_products(product_ids[0], page=1, page_size=10)
+
+        assert related is not None
+        related_ids = [item["id"] for item in related["items"]]
+        self.assertIn(product_ids[1], related_ids)
+        self.assertEqual(related_ids[0], product_ids[1])
 
     def test_query_expansion_prefers_generated_titles(self):
         variants = expand_query_variants("iphone")

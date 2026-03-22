@@ -72,6 +72,10 @@ def _replace_named_placeholders(sql: str) -> str:
     return NAMED_PLACEHOLDER_PATTERN.sub(r"%(\1)s", sql)
 
 
+def _escape_literal_percents(sql: str) -> str:
+    return sql.replace("%", "%%")
+
+
 def _rewrite_insert_or_replace(sql: str) -> str:
     match = INSERT_OR_REPLACE_PATTERN.search(sql)
     if not match:
@@ -98,7 +102,7 @@ def _rewrite_insert_or_replace(sql: str) -> str:
 
 
 def translate_sql(sql: str) -> str:
-    translated = sql
+    translated = _escape_literal_percents(sql)
     if "INSERT OR REPLACE" in translated.upper():
         translated = _rewrite_insert_or_replace(translated)
     translated = _replace_named_placeholders(translated)

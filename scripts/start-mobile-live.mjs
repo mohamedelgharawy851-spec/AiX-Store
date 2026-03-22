@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 loadAIXStoreEnv(rootDir);
 const mode = process.argv[2] || "start";
-const runtimePort = Number(process.env.AIXSTORE_RUNTIME_PORT || 8787);
+const runtimePort = Number(process.env.AIXSTORE_RUNTIME_PORT || 7860);
 const pythonPort = Number(process.env.AIXSTORE_PYTHON_PORT || 8790);
 
 function wait(ms) {

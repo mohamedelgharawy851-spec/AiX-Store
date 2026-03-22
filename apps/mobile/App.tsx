@@ -837,6 +837,11 @@ function ProductCard({
           />
         </Pressable>
       ) : null}
+      {discount > 0 ? (
+        <View style={styles.productDiscountBadge}>
+          <Text style={styles.productDiscountText}>{discount}% OFF</Text>
+        </View>
+      ) : null}
       <View style={styles.productImageWrap}>
         <ProductImage
           imageAltText={product.imageAltText}
@@ -844,11 +849,6 @@ function ProductCard({
           sourceImageUrl={product.sourceImageUrl}
           style={styles.productImage}
         />
-        {discount > 0 ? (
-          <View style={styles.productDiscountBadge}>
-            <Text style={styles.productDiscountText}>{discount}% OFF</Text>
-          </View>
-        ) : null}
       </View>
       <Text style={styles.productCategory}>{product.category}</Text>
       <Text numberOfLines={1} style={styles.productName}>
@@ -2187,16 +2187,6 @@ export default function App() {
   }
 
   async function loadRelatedPage(productId: string, page: number, append = false) {
-    const key = relatedCacheKey(productId, page);
-    const cached = relatedCacheRef.current.get(key);
-    if (page === 1 && cached) {
-      mergeFavoriteIds(cached.items);
-      setRelatedProducts(cached.items);
-      setRelatedPage(cached.page);
-      setRelatedHasMore(cached.hasMore);
-      setLoadingRelated(false);
-    }
-
     const area: RequestArea = "related";
     const requestId = ++requestIdsRef.current[area];
     abortArea(area);
@@ -2205,7 +2195,10 @@ export default function App() {
 
     if (append) {
       setLoadingMoreRelated(true);
-    } else if (!cached) {
+    } else {
+      setRelatedProducts([]);
+      setRelatedPage(1);
+      setRelatedHasMore(false);
       setLoadingRelated(true);
     }
 
@@ -2219,7 +2212,6 @@ export default function App() {
       if (requestIdsRef.current[area] !== requestId) {
         return;
       }
-      relatedCacheRef.current.set(key, payload);
       mergeFavoriteIds(payload.items);
       setRelatedPage(payload.page);
       setRelatedHasMore(payload.hasMore);
@@ -2428,11 +2420,14 @@ export default function App() {
       isFavorite: isFavoriteProduct(product),
       imageGallery: imageGalleryForProduct(product),
     };
+    setRelatedProducts([]);
+    setRelatedPage(1);
+    setRelatedHasMore(false);
     setSelectedProductSummary(summaryProduct);
     const cachedDetail = detailCacheRef.current.get(product.id) ?? null;
-    setSelectedProductDetail(cachedDetail);
+    setSelectedProductDetail(cachedDetail ? { ...cachedDetail, relatedProducts: [] } : null);
     setViewMode("detail");
-    setLoadingProductDetail(!cachedDetail);
+    setLoadingProductDetail(true);
     if (originSurface === "home" || originSurface === "catalog" || originSurface === "favorites") {
       void fireUserEvent({
         type: "product_view",
@@ -2442,7 +2437,7 @@ export default function App() {
       });
     }
     if (cachedDetail) {
-      mergeFavoriteIds([cachedDetail, ...(cachedDetail.relatedProducts || [])]);
+      mergeFavoriteIds([cachedDetail]);
     }
 
     const area: RequestArea = "detail";
@@ -2459,7 +2454,7 @@ export default function App() {
       if (requestIdsRef.current[area] !== requestId) {
         return;
       }
-      detailCacheRef.current.set(product.id, payload);
+      detailCacheRef.current.set(product.id, { ...payload, relatedProducts: [] });
       setSelectedProductDetail(payload);
       mergeFavoriteIds([payload, ...(payload.relatedProducts || [])]);
     } catch {
@@ -2494,10 +2489,9 @@ export default function App() {
 
     const cachedDetail = detailCacheRef.current.get(variant.productId);
     if (cachedDetail) {
-      setSelectedProductDetail(cachedDetail);
+      setSelectedProductDetail({ ...cachedDetail, relatedProducts: [] });
       setSelectedProductSummary(cachedDetail);
-      mergeFavoriteIds([cachedDetail, ...(cachedDetail.relatedProducts || [])]);
-      return;
+      mergeFavoriteIds([cachedDetail]);
     }
 
     const area: RequestArea = "detail";
@@ -2515,7 +2509,7 @@ export default function App() {
       if (requestIdsRef.current[area] !== requestId) {
         return;
       }
-      detailCacheRef.current.set(variant.productId, payload);
+      detailCacheRef.current.set(variant.productId, { ...payload, relatedProducts: [] });
       setSelectedProductSummary(payload);
       setSelectedProductDetail(payload);
       mergeFavoriteIds([payload, ...(payload.relatedProducts || [])]);
@@ -3263,7 +3257,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: 22,
     borderWidth: 1,
+    overflow: "visible",
     padding: spacing.md,
+    position: "relative",
     width: "47%",
   },
   productImage: {
@@ -3275,19 +3271,23 @@ const styles = StyleSheet.create({
   productImageWrap: {
     marginBottom: spacing.sm,
     position: "relative",
+    zIndex: 0,
   },
   productDiscountBadge: {
     backgroundColor: "#0F7A5D",
     borderRadius: 999,
+    elevation: 3,
+    height: 30,
+    justifyContent: "center",
     left: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
     position: "absolute",
     top: spacing.sm,
+    zIndex: 3,
   },
   productDiscountText: {
     color: colors.onPrimary,
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "800",
   },
   productCategory: {

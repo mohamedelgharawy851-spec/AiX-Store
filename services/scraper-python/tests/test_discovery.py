@@ -783,7 +783,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["id"], page_two_id)
         self.assertEqual(payload["matching"]["source"], "expanded")
 
-    def test_related_page_two_uses_searxng_only_pagination(self):
+    def test_related_page_two_uses_catalog_search_pagination(self):
         base_id = self._seed_product(
             url_suffix="apple-watch-9",
             title="Apple Watch Series 9",
@@ -799,78 +799,31 @@ class DiscoveryTests(unittest.TestCase):
             tags=["watch", "smartwatch", "fitbit"],
         )
         runner = jobs_module.CatalogJobRunner()
-        extra_product = ProviderProduct(
-            provider="Target",
-            source_url="https://www.target.com/p/fitbit-sense-2/-/A-1002",
-            canonical_source_url="https://www.target.com/p/fitbit-sense-2/-/A-1002",
-            title="Fitbit Sense 2",
-            description="Smart watch from Fitbit",
-            price=249.99,
-            currency="USD",
-            category_id="electronics",
-            category="Electronics",
-            brand="Fitbit",
-            source_image_url="https://images.example.com/fitbit-sense-2.jpg",
-            rating=4.3,
-            review_count=44,
-            tags=["watch", "smartwatch"],
-        )
-
-        async def persist_products(items):
-            return {"productIds": [extra_id], "aiCategoryJudgeUsed": False}
+        extra_product = db_module.get_product(extra_id)
+        assert extra_product is not None
 
         with patch.object(
-            jobs_module,
-            "get_related_products",
-            lambda *args, **kwargs: {
-                "items": [{"id": "seed-watch", "name": "Apple Watch SE"}],
-                "page": 1,
-                "pageSize": 1,
-                "hasMore": False,
-                "total": 1,
-            },
-        ), patch.object(
-            jobs_module.searxng_client,
+            runner,
             "search",
             AsyncMock(
-                return_value=SearXNGSearchResult(
-                    query="apple watch series 9",
-                    page=1,
-                    engines=["duckduckgo", "bing", "startpage"],
-                    hits=[
-                        DiscoveryHit(
-                            title="Fitbit Sense 2 - Target",
-                            url="https://www.target.com/p/fitbit-sense-2/-/A-1002",
-                            normalized_url="https://target.com/p/fitbit-sense-2/-/A-1002",
-                            domain="target.com",
-                            provider_name="target_requests",
-                            snippet="Smart watch from Fitbit.",
-                            source="organic",
-                            source_title="Fitbit Sense 2 - Target",
-                            source_snippet="Smart watch from Fitbit.",
-                            source_rank=1,
-                            engine="duckduckgo",
-                        )
-                    ],
-                )
+                return_value={
+                    "items": [extra_product],
+                    "page": 2,
+                    "pageSize": 3,
+                    "hasMore": False,
+                    "total": 3,
+                }
             ),
-        ), patch.object(
-            runner._provider_map["target_requests"],
-            "search_by_urls",
-            AsyncMock(return_value=ProviderSearchResult(provider="target_requests", items=[extra_product])),
-        ), patch.object(
-            runner,
-            "_persist_products",
-            AsyncMock(side_effect=persist_products),
-        ):
+        ) as search_mock:
             payload = asyncio.run(runner.get_related(base_id, page=2, page_size=1))
 
         self.assertIsNotNone(payload)
         assert payload is not None
         self.assertEqual(payload["items"][0]["id"], extra_id)
         self.assertEqual(payload["page"], 2)
+        self.assertEqual(search_mock.await_args.kwargs["page"], 2)
 
-    def test_related_page_two_filters_irrelevant_expanded_items(self):
+    def test_related_page_filters_out_the_open_product_from_search_results(self):
         base_id = self._seed_product(
             url_suffix="tennis-ball-can",
             title="Championship Tennis Ball Can",
@@ -878,44 +831,39 @@ class DiscoveryTests(unittest.TestCase):
             category_id="sports",
             tags=["tennis", "ball", "sports"],
         )
-        irrelevant_id = self._seed_product(
-            url_suffix="whole-milk-gallon",
-            title="Whole Milk Gallon",
-            description="Fresh whole milk",
-            category_id="food",
-            tags=["milk", "dairy", "grocery"],
+        related_id = self._seed_product(
+            url_suffix="training-tennis-ball-pack",
+            title="Training Tennis Ball Pack",
+            description="Durable tennis ball pack for practice sessions",
+            category_id="sports",
+            tags=["tennis", "ball", "practice"],
         )
         runner = jobs_module.CatalogJobRunner()
-        irrelevant_product = db_module.get_product(irrelevant_id)
-        assert irrelevant_product is not None
+        current_product = db_module.get_product(base_id)
+        related_product = db_module.get_product(related_id)
+        assert current_product is not None
+        assert related_product is not None
 
         with patch.object(
-            jobs_module,
-            "get_related_products",
-            lambda *args, **kwargs: {
-                "items": [{"id": "seed-tennis-ball", "name": "Training Tennis Ball Pack", "tags": ["tennis", "ball"]}],
-                "page": 1,
-                "pageSize": 1,
-                "hasMore": False,
-                "total": 1,
-            },
-        ), patch.object(
-            jobs_module,
-            "list_query_products",
-            lambda *args, **kwargs: {
-                "items": [irrelevant_product],
-                "page": 1,
-                "pageSize": 1,
-                "hasMore": False,
-            },
-        ), patch.object(jobs_module, "get_query_metadata", lambda *args, **kwargs: {}):
-            payload = asyncio.run(runner.get_related(base_id, page=2, page_size=1))
+            runner,
+            "search",
+            AsyncMock(
+                return_value={
+                    "items": [current_product, related_product],
+                    "page": 1,
+                    "pageSize": 4,
+                    "hasMore": False,
+                    "total": 2,
+                }
+            ),
+        ):
+            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=2))
 
         self.assertIsNotNone(payload)
         assert payload is not None
-        self.assertEqual(payload["items"], [])
+        self.assertEqual([item["id"] for item in payload["items"]], [related_id])
 
-    def test_related_page_one_keeps_grab_more_available_when_seed_queries_exist(self):
+    def test_related_page_one_uses_search_total_for_has_more(self):
         base_id = self._seed_product(
             url_suffix="portable-ping-pong-table",
             title="Portable Ping Pong Table",
@@ -923,25 +871,121 @@ class DiscoveryTests(unittest.TestCase):
             category_id="others",
             tags=["ping pong", "table tennis", "portable"],
         )
+        first_related_id = self._seed_product(
+            url_suffix="blue-portable-table-tennis-table",
+            title="Blue Portable Table Tennis Table",
+            description="Tournament-style ping pong table for indoor games",
+            category_id="others",
+            tags=["table tennis", "ping pong", "portable"],
+        )
         runner = jobs_module.CatalogJobRunner()
+        first_related = db_module.get_product(first_related_id)
+        assert first_related is not None
 
         with patch.object(
-            jobs_module,
-            "get_related_products",
-            lambda *args, **kwargs: {
-                "items": [{"id": "seed-table", "name": "Blue Portable Table Tennis Table"}],
-                "page": 1,
-                "pageSize": 1,
-                "hasMore": False,
-                "total": 1,
-            },
+            runner,
+            "search",
+            AsyncMock(
+                return_value={
+                    "items": [first_related],
+                    "page": 1,
+                    "pageSize": 3,
+                    "hasMore": False,
+                    "total": 4,
+                }
+            ),
         ):
             payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
 
         assert payload is not None
         self.assertTrue(payload["hasMore"])
 
-    def test_related_page_two_ranks_with_family_query(self):
+    def test_get_related_uses_catalog_search_results_directly(self):
+        base_id = self._seed_product(
+            url_suffix="rubiks-cube-classic",
+            title="Rubik's Cube The Original 3x3 Cube",
+            description="Classic Rubik puzzle cube brain teaser",
+            category_id="toys",
+            tags=["rubik", "cube", "puzzle"],
+        )
+        related_id = self._seed_product(
+            url_suffix="rubiks-speed-cube",
+            title="Rubik's 3x3 Speed Cube",
+            description="Magnetic Rubik speed cube",
+            category_id="others",
+            tags=["rubik", "cube", "speed cube"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        current_product = db_module.get_product(base_id)
+        related_product = db_module.get_product(related_id)
+        assert current_product is not None
+        assert related_product is not None
+
+        with patch.object(
+            runner,
+            "search",
+            AsyncMock(
+                return_value={
+                    "items": [current_product, related_product],
+                    "page": 1,
+                    "pageSize": 3,
+                    "hasMore": False,
+                    "total": 2,
+                }
+            ),
+        ) as search_mock:
+            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual([item["id"] for item in payload["items"]], [related_id])
+        self.assertIsNone(search_mock.await_args.kwargs["category_id"])
+
+    def test_get_detail_populates_related_products_from_catalog_search(self):
+        base_id = self._seed_product(
+            url_suffix="rubiks-cube-detail",
+            title="Rubik's Cube The Original 3x3 Cube",
+            description="Classic Rubik puzzle cube brain teaser",
+            category_id="toys",
+            tags=["rubik", "cube", "puzzle"],
+        )
+        related_id = self._seed_product(
+            url_suffix="rubiks-cube-detail-speed",
+            title="Rubik's 3x3 Speed Cube",
+            description="Magnetic Rubik speed cube",
+            category_id="others",
+            tags=["rubik", "cube", "speed cube"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        current_product = db_module.get_product(base_id)
+        related_product = db_module.get_product(related_id)
+        assert current_product is not None
+        assert related_product is not None
+
+        with patch.object(
+            runner,
+            "_provider_for_product",
+            lambda *args, **kwargs: None,
+        ), patch.object(
+            runner,
+            "search",
+            AsyncMock(
+                return_value={
+                    "items": [current_product, related_product],
+                    "page": 1,
+                    "pageSize": 8,
+                    "hasMore": False,
+                    "total": 2,
+                }
+            ),
+        ):
+            payload = asyncio.run(runner.get_detail(base_id))
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual([item["id"] for item in payload["relatedProducts"]], [related_id])
+
+    def test_related_page_ignores_old_related_cache_rows_when_search_finds_better_match(self):
         base_id = self._seed_product(
             url_suffix="nike-running-shoes",
             title="Nike Running Shoes",
@@ -949,73 +993,52 @@ class DiscoveryTests(unittest.TestCase):
             category_id="fashion",
             tags=["nike", "running", "shoes"],
         )
-        extra_id = self._seed_product(
+        stale_related_id = self._seed_product(
             url_suffix="summer-sandals",
             title="Summer Sandals",
             description="Comfort sandals for walking",
             category_id="fashion",
             tags=["sandals", "walking", "summer"],
         )
+        search_related_id = self._seed_product(
+            url_suffix="nike-pegasus-running-shoes",
+            title="Nike Pegasus Running Shoes",
+            description="Performance running shoes for training and race day",
+            category_id="fashion",
+            tags=["nike", "running", "shoes"],
+        )
         runner = jobs_module.CatalogJobRunner()
-        fetch_hits = AsyncMock(
-            return_value={
-                "hits": [
-                    {
-                        "title": "Summer Sandals - Target",
-                        "normalized_url": "https://target.com/p/summer-sandals/-/A-1002",
-                        "domain": "target.com",
-                        "provider_name": "target_requests",
-                    }
-                ],
-                "latencyMs": 5,
-                "engines": ["duckduckgo"],
-                "error": None,
-            }
-        )
-        extract_products = AsyncMock(
-            return_value={
-                "acceptedIds": [extra_id],
-                "filteredOutCount": 0,
-                "exactMatchCount": 1,
-                "categoryJudgeUsed": False,
-            }
-        )
-        cursor = runner._empty_cursor([])
+        search_related = db_module.get_product(search_related_id)
+        assert search_related is not None
+
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO related_products (product_id, related_product_id, score, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (base_id, stale_related_id, 9.8, "Old related cache row"),
+            )
+            connection.commit()
 
         with patch.object(
-            jobs_module,
-            "get_related_products",
-            lambda *args, **kwargs: {
-                "items": [{"id": "seed-shoe", "name": "Adidas Sneakers"}],
-                "page": 1,
-                "pageSize": 1,
-                "hasMore": False,
-                "total": 1,
-            },
-        ), patch.object(runner, "_fetch_searxng_hits", fetch_hits), patch.object(
             runner,
-            "_extract_discovery_products",
-            extract_products,
+            "search",
+            AsyncMock(
+                return_value={
+                    "items": [search_related],
+                    "page": 1,
+                    "pageSize": 4,
+                    "hasMore": False,
+                    "total": 1,
+                }
+            ),
         ):
-            asyncio.run(
-                runner._ensure_related_show_more_results(
-                    product=db_module.get_product(base_id),
-                    related_context_key=f"related::{base_id}",
-                    page=2,
-                    page_size=1,
-                    user_id=None,
-                    session_id=None,
-                    cursor=cursor,
-                    seed_queries=["nike running shoes", "adidas sneakers"],
-                )
-            )
+            payload = asyncio.run(runner.get_related(base_id, page=1, page_size=1))
 
-        self.assertIn("running", fetch_hits.await_args.kwargs["ranking_query"])
-        self.assertIn("sneakers", fetch_hits.await_args.kwargs["ranking_query"])
-        self.assertEqual(
-            fetch_hits.await_args.kwargs["ranking_query"],
-            extract_products.await_args.kwargs["ranking_query"],
-        )
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual([item["id"] for item in payload["items"]], [search_related_id])
 
     def test_search_falls_back_cleanly_when_discovery_fails(self):
         product_id = self._seed_product(

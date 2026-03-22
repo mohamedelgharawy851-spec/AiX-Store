@@ -107,6 +107,36 @@ def _decode_string_list(value: Any) -> list[str]:
     return [normalize_whitespace(str(item)) for item in decoded if normalize_whitespace(str(item))]
 
 
+RELATED_SEARCH_TITLE_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "color",
+    "matching",
+    "problem",
+    "solving",
+    "brain",
+    "teaser",
+    "fidget",
+    "sensory",
+    "basket",
+    "stuffer",
+    "ages",
+    "original",
+    "classic",
+    "toy",
+    "toys",
+    "game",
+    "kids",
+    "adult",
+    "piece",
+    "pack",
+    "set",
+}
+
+
 class CatalogJobRunner:
     def __init__(self) -> None:
         self._provider_map = {
@@ -130,6 +160,71 @@ class CatalogJobRunner:
         if aliased_provider:
             return self._provider_map.get(aliased_provider)
         return None
+
+    def _related_search_query(self, product: dict[str, Any]) -> str:
+        title = normalize_whitespace(product.get("name") or product.get("title"))
+        filtered_tokens: list[str] = []
+        for token in tokenize(title):
+            normalized_token = singularize_token(token)
+            if (
+                not normalized_token
+                or normalized_token in RELATED_SEARCH_TITLE_STOPWORDS
+                or any(character.isdigit() for character in normalized_token)
+            ):
+                continue
+            if normalized_token not in filtered_tokens:
+                filtered_tokens.append(normalized_token)
+            if len(filtered_tokens) >= 3:
+                break
+        if filtered_tokens:
+            return " ".join(filtered_tokens)
+        return title
+
+    async def _search_related_products(
+        self,
+        product: dict[str, Any],
+        *,
+        page: int,
+        page_size: int,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        related_query = self._related_search_query(product)
+        payload = await self.search(
+            related_query,
+            page=page,
+            page_size=page_size + 2,
+            category_id=None,
+            user_id=user_id,
+        )
+        filtered_items: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        current_product_id = str(product.get("id") or "")
+        current_present = False
+        for item in payload.get("items", []):
+            item_id = str(item.get("id") or "")
+            if not item_id:
+                continue
+            if item_id == current_product_id:
+                current_present = True
+                continue
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            filtered_items.append(item)
+            if len(filtered_items) >= page_size:
+                break
+        total = max(
+            len(filtered_items),
+            max(int(payload.get("total") or 0) - (1 if current_present else 0), 0),
+        )
+        return {
+            "items": filtered_items,
+            "page": page,
+            "pageSize": page_size,
+            "hasMore": total > (page * page_size),
+            "total": total,
+            "query": related_query,
+        }
 
     def _provider_sequence(self, provider_names: list[str] | tuple[str, ...] | None = None):
         now = asyncio.get_running_loop().time()
@@ -1898,7 +1993,15 @@ class CatalogJobRunner:
                     persisted = {"productIds": []}
                 if persisted["productIds"] and enriched.reviews:
                     replace_reviews(product_id, enriched.reviews)
-        return get_product_with_reviews(product_id, user_id=user_id, session_id=session_id)
+        detail = get_product_with_reviews(product_id, user_id=user_id, session_id=session_id)
+        if not detail:
+            return None
+        try:
+            related_payload = await self._search_related_products(detail, page=1, page_size=6, user_id=user_id)
+            detail["relatedProducts"] = related_payload["items"]
+        except Exception:
+            detail["relatedProducts"] = []
+        return detail
 
     async def get_related(
         self,
@@ -1911,62 +2014,13 @@ class CatalogJobRunner:
         product = get_product(product_id, user_id=user_id)
         if not product:
             return None
-        if page == 1:
-            payload = get_related_products(product_id, page=page, page_size=page_size, user_id=user_id, session_id=session_id)
-            if not payload:
-                return None
-            seed_queries = build_related_seed_queries(product, payload.get("items", []))
-            payload["hasMore"] = bool(payload.get("hasMore")) or bool(seed_queries)
-            return payload
-
-        related_context_key = f"related::{product_id}"
-        base_related = get_related_products(product_id, page=1, page_size=page_size, user_id=user_id, session_id=session_id) or {
+        payload = await self._search_related_products(product, page=page, page_size=page_size, user_id=user_id)
+        return payload if payload.get("items") else {
             "items": [],
-            "total": 0,
-        }
-        seed_queries = build_related_seed_queries(product, base_related.get("items", []))
-        metadata = get_query_metadata(related_context_key) or {}
-        stored_variants = metadata.get("query_variants_json")
-        if stored_variants and _decode_string_list(stored_variants) != seed_queries:
-            clear_query_results(related_context_key)
-            metadata = {}
-        cursor = self._load_cursor(metadata, seed_queries)
-        strict_category_id = str(product.get("categoryId") or "")
-        if strict_category_id == "others":
-            strict_category_id = ""
-        internal_page = max(1, page - 1)
-        payload = list_query_products(
-            related_context_key,
-            page=internal_page,
-            page_size=page_size,
-            category_id=strict_category_id or None,
-            user_id=user_id,
-        )
-        if len(payload["items"]) < page_size:
-            cursor = await self._ensure_related_show_more_results(
-                product=product,
-                related_context_key=related_context_key,
-                page=page,
-                page_size=page_size,
-                user_id=user_id,
-                session_id=session_id,
-                cursor=cursor,
-                seed_queries=seed_queries,
-            )
-            payload = list_query_products(
-                related_context_key,
-                page=internal_page,
-                page_size=page_size,
-                category_id=strict_category_id or None,
-                user_id=user_id,
-            )
-        filtered_items = filter_related_product_candidates(product, payload.get("items", []))
-        return {
-            "items": filtered_items,
             "page": page,
             "pageSize": page_size,
-            "hasMore": bool(payload.get("hasMore")) or self._cursor_has_more(cursor),
-            "total": int(base_related.get("total", 0) or 0) + count_query_results(related_context_key),
+            "hasMore": False,
+            "total": 0,
         }
 
 
