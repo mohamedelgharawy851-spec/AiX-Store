@@ -78,7 +78,7 @@ const CATEGORY_FALLBACK_QUERIES: Record<string, string> = {
   sports: "dumbbells",
   others: "storage organizer",
 };
-const CATEGORY_PRIMARY_TIMEOUT_MS = 2500;
+const CATEGORY_PRIMARY_TIMEOUT_MS = 8000;
 const SEARCH_REQUEST_TIMEOUT_MS = 90000;
 const HOME_OFFER_LIMIT = 10;
 const OFFER_CARD_WIDTH = 260;
@@ -113,6 +113,9 @@ function normalizeRuntimeAssetUrl(imageUrl: string | null | undefined) {
     return "";
   }
   const runtimeBase = runtimeBaseUrl().replace(/\/+$/, "");
+  if (value.startsWith("/")) {
+    return `${runtimeBase}${value}`;
+  }
   const runtimeHttpBase = runtimeBase.replace(/^https:/, "http:");
   if (value.startsWith(runtimeHttpBase)) {
     return `${runtimeBase}${value.slice(runtimeHttpBase.length)}`;
@@ -177,14 +180,18 @@ function imageGalleryForProduct(product: Product | ProductDetail | null | undefi
           : item,
       )
       .filter((item) => item?.url) ?? [];
-  const galleryUrls = uniqueImageUrls([product?.sourceImageUrl, ...gallery.map((item) => item.url), product?.imageUrl]);
+  const galleryUrls = uniqueImageUrls([
+    product?.imageUrl,
+    ...gallery.map((item) => item.url),
+    gallery.length ? null : product?.sourceImageUrl,
+  ]);
   if (!galleryUrls.length || !product) {
     return [];
   }
   return galleryUrls.map((url, index) => {
     const existing = gallery.find((item) => item.url === url);
     return {
-      id: existing?.id || `${product.id}:img:${index}`,
+      id: `${product.id}:gallery:${index}`,
       url,
       altText: existing?.altText || product.imageAltText,
       variantLabel: existing?.variantLabel ?? product.variantLabel ?? null,
@@ -196,14 +203,15 @@ function productFromVariantSummary(
   baseProduct: Product,
   variant: ProductVariantSummary,
 ): Product {
-  const firstImage = firstNonEmptyUrl(variant.imageGallery[0]?.url, variant.imageUrl, baseProduct.sourceImageUrl, baseProduct.imageUrl);
+  const firstImage = firstNonEmptyUrl(variant.imageUrl, variant.imageGallery[0]?.url, baseProduct.imageUrl, baseProduct.sourceImageUrl);
+  const sourceImage = firstNonEmptyUrl(variant.imageGallery[0]?.url, baseProduct.sourceImageUrl, firstImage);
   return {
     ...baseProduct,
     id: variant.productId,
     price: variant.price,
     originalPrice: variant.originalPrice ?? null,
     imageUrl: firstImage,
-    sourceImageUrl: firstImage,
+    sourceImageUrl: sourceImage,
     imageAltText: baseProduct.imageAltText,
     familyKey: variant.familyKey,
     variantLabel: variant.label,
@@ -603,7 +611,7 @@ function ProductImage({
   sourceImageUrl?: string | null;
   style: any;
 }) {
-  const candidateUrls = uniqueImageUrls([sourceImageUrl, imageUrl]);
+  const candidateUrls = uniqueImageUrls([imageUrl, sourceImageUrl]);
   const [activeIndex, setActiveIndex] = useState(0);
   const resolvedImageUrl = candidateUrls[activeIndex] || "";
 
