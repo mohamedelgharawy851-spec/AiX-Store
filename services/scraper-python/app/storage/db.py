@@ -32,6 +32,7 @@ from ..utils import (
     expand_query_variants,
     from_cents,
     json_dumps,
+    looks_like_book_product,
     normalize_offer_prices,
     normalize_whitespace,
     now_iso,
@@ -230,6 +231,7 @@ def initialize_database() -> None:
             _purge_products_without_images(connection)
             _invalidate_related_derived_caches(connection)
             _repair_invalid_product_pricing(connection)
+            _repair_book_like_product_categories(connection)
             if migrated:
                 connection.execute("DELETE FROM query_products")
                 connection.execute("DELETE FROM queries")
@@ -248,6 +250,7 @@ def initialize_database() -> None:
             # when schema or classification fields change.
             connection.execute("DELETE FROM query_products")
             connection.execute("DELETE FROM queries")
+        _repair_book_like_product_categories(connection)
         connection.commit()
 
 
@@ -891,6 +894,81 @@ def _repair_invalid_product_pricing(connection: sqlite3.Connection) -> None:
     )
 
 
+def _repair_book_like_product_categories(connection: sqlite3.Connection) -> int:
+    rows = connection.execute(
+        """
+        SELECT id, title, description, brand, tags_json, source_category_id, raw_json
+        FROM products
+        WHERE is_active = 1 AND category_id = 'electronics'
+        """
+    ).fetchall()
+    repaired = 0
+    current_time = now_iso()
+    for row in rows:
+        if not looks_like_book_product(row["title"], row["description"], row["brand"]):
+            continue
+        tags = _decode_json_array(row["tags_json"])
+        classification = classify_category(
+            row["title"],
+            row["description"],
+            row["brand"],
+            source_category_id=row["source_category_id"],
+            extra_terms=tags,
+        )
+        resolved_category_id = normalize_whitespace(classification.get("category_id")).lower() or "others"
+        if resolved_category_id == "electronics":
+            resolved_category_id = "others"
+        raw_json = _decode_json_object(row["raw_json"])
+        classification_debug = raw_json.get("classification_debug")
+        if not isinstance(classification_debug, dict):
+            classification_debug = {}
+        classification_debug["individualCategoryId"] = resolved_category_id
+        classification_debug["individualCategory"] = category_name(resolved_category_id)
+        classification_debug["individualCategorySource"] = "rules"
+        classification_debug["individualCategoryConfidence"] = float(classification.get("confidence") or 0.0)
+        classification_debug["individualCategoryScores"] = classification.get("scores") or {}
+        classification_debug["individualMatchedTerms"] = classification.get("matched_terms") or []
+        classification_debug["batchResolvedCategoryId"] = resolved_category_id
+        classification_debug["batchResolvedCategoryReason"] = "startup_book_repair"
+        raw_json["classification_debug"] = classification_debug
+        connection.execute(
+            """
+            UPDATE products
+            SET canonical_category_id = ?,
+                canonical_category = ?,
+                category_confidence = ?,
+                category_scores_json = ?,
+                matched_terms_json = ?,
+                category_id = ?,
+                category = ?,
+                category_source = 'rules',
+                ai_category_id = NULL,
+                ai_category_confidence = NULL,
+                ai_category_reason = NULL,
+                ai_category_updated_at = NULL,
+                raw_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                resolved_category_id,
+                category_name(resolved_category_id),
+                float(classification.get("confidence") or 0.0),
+                json_dumps(classification.get("scores") or {}),
+                json_dumps(classification.get("matched_terms") or []),
+                resolved_category_id,
+                category_name(resolved_category_id),
+                json_dumps(raw_json),
+                current_time,
+                row["id"],
+            ),
+        )
+        repaired += 1
+    if repaired:
+        logger.info("Reclassified %s book-like products out of electronics.", repaired)
+    return repaired
+
+
 def _now_datetime() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1164,6 +1242,14 @@ def _classification_debug_payload(
         "batchResolvedCategoryId": str(final_category_id),
         "batchResolvedCategoryReason": "individual",
     }
+
+
+def _candidate_looks_like_book(candidate: dict[str, Any]) -> bool:
+    return looks_like_book_product(
+        candidate.get("title") or candidate.get("name"),
+        candidate.get("description"),
+        candidate.get("brand"),
+    )
 
 
 def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dict[str, Any]:
@@ -1563,15 +1649,20 @@ def _apply_batch_category_to_candidate(
 ) -> dict[str, Any]:
     updated = dict(candidate)
     individual_category_id = normalize_whitespace(updated.get("_individual_category_id") or updated.get("category_id")).lower() or "others"
-    updated["canonical_category_id"] = resolved_category_id
-    updated["canonical_category"] = category_name(resolved_category_id)
-    updated["category_id"] = resolved_category_id
-    updated["category"] = category_name(resolved_category_id)
-    if resolved_category_id == individual_category_id:
+    effective_category_id = resolved_category_id
+    effective_reason = reason
+    if _candidate_looks_like_book(updated):
+        effective_category_id = individual_category_id
+        effective_reason = "book_like_protected"
+    updated["canonical_category_id"] = effective_category_id
+    updated["canonical_category"] = category_name(effective_category_id)
+    updated["category_id"] = effective_category_id
+    updated["category"] = category_name(effective_category_id)
+    if effective_category_id == individual_category_id:
         updated["category_source"] = updated.get("_individual_category_source") or updated.get("category_source") or "rules"
     else:
         updated["category_source"] = "batch"
-        if resolved_category_id == "others":
+        if effective_category_id == "others":
             updated["category_confidence"] = 0.0
         else:
             updated["category_confidence"] = max(float(updated.get("category_confidence") or 0.0), 1.0)
@@ -1580,8 +1671,8 @@ def _apply_batch_category_to_candidate(
     if not isinstance(classification_debug, dict):
         classification_debug = {}
     classification_debug["requestedCategoryId"] = normalize_whitespace(requested_category_id) or None
-    classification_debug["batchResolvedCategoryId"] = resolved_category_id
-    classification_debug["batchResolvedCategoryReason"] = reason
+    classification_debug["batchResolvedCategoryId"] = effective_category_id
+    classification_debug["batchResolvedCategoryReason"] = effective_reason
     raw_json["classification_debug"] = classification_debug
     updated["raw_json"] = json_dumps(raw_json)
     return updated
@@ -3247,10 +3338,17 @@ def _fulltext_search_related_rows(
     normalized_query = normalize_whitespace(query_text).lower()
     if not normalized_query:
         return []
+    normalized_category_id = normalize_whitespace(category_id).lower() or None
 
     if postgres_enabled():
+        category_sql = ""
+        params: list[Any] = [normalized_query, exclude_id]
+        if normalized_category_id:
+            category_sql = " AND category_id = ?"
+            params.append(normalized_category_id)
+        params.extend([normalized_query, limit])
         rows = connection.execute(
-            """
+            f"""
             SELECT *,
                    ts_rank_cd(
                      to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, '')),
@@ -3259,29 +3357,35 @@ def _fulltext_search_related_rows(
             FROM products
             WHERE is_active = 1
               AND id != ?
-              AND (? IS NULL OR category_id = ?)
+              {category_sql}
               AND to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, ''))
                   @@ plainto_tsquery('english', ?)
             ORDER BY text_rank DESC, updated_at DESC
             LIMIT ?
             """,
-            (normalized_query, exclude_id, category_id, category_id, normalized_query, limit),
+            tuple(params),
         ).fetchall()
         rows = _filter_rows_with_images(rows)
         return [(row, float(_record_value(row, "text_rank") or 0.0)) for row in rows]
 
+    category_sql = ""
+    params = [exclude_id]
+    if normalized_category_id:
+        category_sql = " AND category_id = ?"
+        params.append(normalized_category_id)
+    params.append(max(limit * 10, 240))
     query_tokens = _build_search_token_set(normalized_query)
     rows = connection.execute(
-        """
+        f"""
         SELECT *
         FROM products
         WHERE is_active = 1
           AND id != ?
-          AND (? IS NULL OR category_id = ?)
+          {category_sql}
         ORDER BY updated_at DESC
         LIMIT ?
         """,
-        (exclude_id, category_id, category_id, max(limit * 10, 240)),
+        tuple(params),
     ).fetchall()
     rows = _filter_rows_with_images(rows)
     scored_rows: list[tuple[sqlite3.Row, float]] = []

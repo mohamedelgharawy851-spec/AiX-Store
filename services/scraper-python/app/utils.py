@@ -153,8 +153,30 @@ def singularize_token(token: str) -> str:
     return text
 
 
+BOOK_FORMAT_TERMS = (
+    "paperback",
+    "hardcover",
+    "board book",
+    "mass market",
+    "spiral bound",
+    "library binding",
+    "picture book",
+    "workbook",
+    "study guide",
+)
+
+
+def looks_like_book_product(*parts: str | None) -> bool:
+    text = " ".join(normalize_whitespace(part).lower() for part in parts if normalize_whitespace(part))
+    if not text:
+        return False
+    return any(term in text for term in BOOK_FORMAT_TERMS)
+
+
 def infer_category_id(*parts: str | None) -> str:
     query = " ".join(normalize_whitespace(part).lower() for part in parts if part)
+    if looks_like_book_product(query):
+        return "others"
     for category_id, config in CATEGORY_CONFIG.items():
         keywords = config.get("keywords", [])
         if any(keyword in query for keyword in keywords):
@@ -169,6 +191,7 @@ def classify_category(
 ) -> dict[str, object]:
     normalized_parts = [normalize_whitespace(part).lower() for part in parts if normalize_whitespace(part)]
     text = " ".join(normalized_parts)
+    book_like = looks_like_book_product(text, " ".join(extra_terms or []))
     tokens = tokenize(text, *(extra_terms or []))
     token_set = {singularize_token(token) for token in tokens}
     scores: dict[str, float] = {}
@@ -226,7 +249,10 @@ def classify_category(
         }
         for category_id, score in ordered[:3]
     ]
-    if best_score < CATEGORY_STRICT_SCORE_THRESHOLD or (best_score - second_score) < CATEGORY_SCORE_MARGIN:
+    if book_like:
+        matched_terms["others"] = sorted(set([*matched_terms.get("others", []), "book_like"]))
+        best_category = "others"
+    elif best_score < CATEGORY_STRICT_SCORE_THRESHOLD or (best_score - second_score) < CATEGORY_SCORE_MARGIN:
         best_category = "others"
     return {
         "category_id": best_category,

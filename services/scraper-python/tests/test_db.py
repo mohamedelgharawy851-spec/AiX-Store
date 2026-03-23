@@ -346,6 +346,35 @@ class DatabaseTests(unittest.TestCase):
         self.assertNotIn(product_ids[2], [item["id"] for item in payload["items"]])
         self.assertTrue(any("rubik" in keyword and "cube" in keyword for keyword in payload["keywords"]))
 
+    def test_postgres_related_fulltext_query_omits_null_category_parameter_clause(self):
+        class FakeResult:
+            def fetchall(self):
+                return []
+
+        class FakeConnection:
+            def __init__(self):
+                self.sql = ""
+                self.params = ()
+
+            def execute(self, sql, params=()):
+                self.sql = sql
+                self.params = params
+                return FakeResult()
+
+        fake_connection = FakeConnection()
+        with patch.object(db_module, "postgres_enabled", return_value=True):
+            rows = db_module._fulltext_search_related_rows(
+                fake_connection,
+                "accent chair",
+                exclude_id="demo-product",
+                category_id=None,
+                limit=12,
+            )
+
+        self.assertEqual(rows, [])
+        self.assertNotIn("IS NULL OR category_id", fake_connection.sql)
+        self.assertEqual(fake_connection.params, ("accent chair", "demo-product", "accent chair", 12))
+
     def test_batch_requested_category_forces_all_ranked_candidates_into_same_category(self):
         products = [
             self._make_product(
@@ -2476,6 +2505,63 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(classify_category("protein bars")["category_id"], "food")
         self.assertEqual(classify_category("bed")["category_id"], "home")
         self.assertEqual(classify_category("mac")["category_id"], "electronics")
+
+    def test_book_like_product_stays_out_of_requested_electronics_category(self):
+        book = self._make_product(
+            url_suffix="stories-of-your-life",
+            title="Stories of Your Life and Others - by Ted Chiang (Paperback)",
+            description="Science fiction short-story collection in paperback format.",
+            category_id="electronics",
+            brand="Vintage",
+            tags=["paperback", "book", "fiction"],
+        )
+
+        candidates = self._prepare_candidates([book])
+        resolved_category_id = db_module.resolve_batch_category(candidates, requested_category_id="electronics")
+        normalized_candidates = db_module.apply_batch_category_to_candidates(
+            candidates,
+            resolved_category_id=resolved_category_id,
+            requested_category_id="electronics",
+        )
+
+        self.assertEqual(normalized_candidates[0]["category_id"], "others")
+        self.assertEqual(normalized_candidates[0]["category_source"], "rules")
+
+    def test_initialize_database_repairs_book_like_electronics_rows(self):
+        book = self._make_product(
+            url_suffix="regarding-the-pain-of-others",
+            title="Regarding the Pain of Others - by Susan Sontag (Paperback)",
+            description="Paperback nonfiction book.",
+            category_id="electronics",
+            brand="Picador USA",
+            tags=["paperback", "book", "nonfiction"],
+        )
+        product_id = self._upsert([book])[0]
+
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                UPDATE products
+                SET canonical_category_id = 'electronics',
+                    canonical_category = 'Electronics',
+                    category_confidence = 1.0,
+                    category_scores_json = '{}',
+                    matched_terms_json = '[]',
+                    category_id = 'electronics',
+                    category = 'Electronics',
+                    category_source = 'batch'
+                WHERE id = ?
+                """,
+                (product_id,),
+            )
+            connection.commit()
+
+        db_module.initialize_database()
+
+        repaired = db_module.get_product(product_id)
+        assert repaired is not None
+        self.assertEqual(repaired["categoryId"], "others")
+        self.assertEqual(repaired["categorySource"], "rules")
 
     def test_short_brand_query_does_not_match_substrings(self):
         microphone = ProviderProduct(
