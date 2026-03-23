@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS public.products (
   ai_category_reason TEXT,
   ai_category_updated_at TIMESTAMPTZ,
   brand TEXT,
+  collection_code TEXT,
   source_image_url TEXT NOT NULL,
   image_gallery_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   family_key TEXT,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS public.products (
 
 CREATE INDEX IF NOT EXISTS idx_products_category_id ON public.products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON public.products(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_products_collection_code ON public.products(collection_code);
 CREATE INDEX IF NOT EXISTS idx_products_fts ON public.products
 USING gin (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, '')));
 
@@ -74,7 +76,8 @@ CREATE TABLE IF NOT EXISTS public.queries (
   last_completed_at TIMESTAMPTZ,
   last_error TEXT,
   next_page_token_json JSONB,
-  query_variants_json JSONB NOT NULL DEFAULT '[]'::jsonb
+  query_variants_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  active_collection_code TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_queries_kind_category ON public.queries(query_kind, category_id);
@@ -90,6 +93,32 @@ CREATE TABLE IF NOT EXISTS public.query_products (
 );
 
 CREATE INDEX IF NOT EXISTS idx_query_products_query_page ON public.query_products(normalized_query, page_number, rank);
+
+CREATE TABLE IF NOT EXISTS public.collection_groups (
+  code TEXT PRIMARY KEY,
+  context_key TEXT NOT NULL,
+  display_query TEXT NOT NULL,
+  query_kind TEXT NOT NULL,
+  requested_category_id TEXT,
+  resolved_category_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_groups_context ON public.collection_groups(context_key, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.collection_group_products (
+  group_code TEXT NOT NULL REFERENCES public.collection_groups(code) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  rank INTEGER NOT NULL,
+  page_number INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (group_code, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_group_products_group_rank
+  ON public.collection_group_products(group_code, page_number, rank);
 
 CREATE TABLE IF NOT EXISTS public.reviews (
   id TEXT PRIMARY KEY,

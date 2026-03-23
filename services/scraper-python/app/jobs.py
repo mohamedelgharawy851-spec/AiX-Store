@@ -50,6 +50,7 @@ from .providers.amazon_requests import AmazonRequestsProvider
 from .providers.target_requests import TargetRequestsProvider
 from .providers.walmart_requests import WalmartRequestsProvider
 from .storage.db import (
+    apply_batch_category_to_candidates,
     append_query_results,
     category_counts,
     clear_query_results,
@@ -67,12 +68,15 @@ from .storage.db import (
     list_products,
     list_query_products,
     mark_discovery_failure,
-    rank_product_ids_for_query,
+    prepare_product_candidates,
+    rank_product_candidates_for_query,
     replace_reviews,
+    resolve_batch_category,
     search_cached_products,
     save_query_results,
     set_query_status,
     store_discovery_hits,
+    upsert_prepared_product_candidates,
     upsert_products,
 )
 from .storage.images import cache_image
@@ -271,6 +275,9 @@ class CatalogJobRunner:
                 "pageSize": page_size,
                 "hasMore": False,
                 "total": 0,
+                "groupCode": normalize_whitespace(product.get("collectionCode")) or None,
+                "groupMatchCount": 0,
+                "fallbackUsed": False,
             }
         return get_related_products(
             product_id,
@@ -284,6 +291,9 @@ class CatalogJobRunner:
             "pageSize": page_size,
             "hasMore": False,
             "total": 0,
+            "groupCode": normalize_whitespace(product.get("collectionCode")) or None,
+            "groupMatchCount": 0,
+            "fallbackUsed": False,
         }
 
     def _provider_sequence(self, provider_names: list[str] | tuple[str, ...] | None = None):
@@ -340,6 +350,14 @@ class CatalogJobRunner:
             return None, f"{provider.name} url extraction failed: {exc}"
 
     async def _persist_products(self, products):
+        prepared = await self._prepare_candidates(products)
+        return upsert_prepared_product_candidates(
+            prepared["candidates"],
+            purge_canonical_urls=prepared["purgeCanonicalUrls"],
+            with_meta=True,
+        )
+
+    async def _prepare_candidates(self, products):
         async def fetch_image_meta(image_url: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 return image_url, await asyncio.wait_for(cache_image(image_url), timeout=2.5)
@@ -356,7 +374,58 @@ class CatalogJobRunner:
         for image_url, image_meta in results:
             if image_meta:
                 image_meta_by_url[image_url] = image_meta
-        return upsert_products(products, image_meta_by_url, with_meta=True)
+        return prepare_product_candidates(products, image_meta_by_url)
+
+    async def _rank_and_persist_products(
+        self,
+        products,
+        *,
+        ranking_query: str,
+        category_id: str | None = None,
+        strict_category: bool = False,
+    ) -> dict[str, Any]:
+        prepared = await self._prepare_candidates(products)
+        ranked_candidates, exact_count, filtered_count = rank_product_candidates_for_query(
+            prepared["candidates"],
+            ranking_query,
+            category_id=category_id,
+            strict_category=strict_category,
+        )
+        if not ranked_candidates:
+            if prepared["purgeCanonicalUrls"]:
+                upsert_prepared_product_candidates(
+                    [],
+                    purge_canonical_urls=prepared["purgeCanonicalUrls"],
+                    with_meta=False,
+                )
+            return {
+                "productIds": [],
+                "exactMatchCount": exact_count,
+                "filteredOutCount": filtered_count,
+                "aiCategoryJudgeUsed": bool(prepared["aiCategoryJudgeUsed"]),
+                "aiCategoryApplied": bool(prepared["aiCategoryApplied"]),
+                "resolvedCategoryId": normalize_whitespace(category_id).lower() or "others",
+            }
+        resolved_category_id = resolve_batch_category(ranked_candidates, category_id)
+        normalized_candidates = apply_batch_category_to_candidates(
+            ranked_candidates,
+            resolved_category_id=resolved_category_id,
+            requested_category_id=category_id,
+        )
+        persisted = upsert_prepared_product_candidates(
+            normalized_candidates,
+            requested_category_id=category_id,
+            purge_canonical_urls=prepared["purgeCanonicalUrls"],
+            with_meta=True,
+        )
+        return {
+            "productIds": persisted["productIds"],
+            "exactMatchCount": exact_count,
+            "filteredOutCount": filtered_count,
+            "aiCategoryJudgeUsed": bool(prepared["aiCategoryJudgeUsed"]) or bool(persisted["aiCategoryJudgeUsed"]),
+            "aiCategoryApplied": bool(prepared["aiCategoryApplied"]) or bool(persisted["aiCategoryApplied"]),
+            "resolvedCategoryId": resolved_category_id,
+        }
 
     def _category_context_key(self, category_id: str) -> str:
         return f"category::{category_id}"
@@ -587,20 +656,18 @@ class CatalogJobRunner:
             if not result.items:
                 continue
             try:
-                persisted = await self._persist_products(result.items)
+                persisted = await self._rank_and_persist_products(
+                    result.items,
+                    ranking_query=ranking_query,
+                    category_id=category_id,
+                    strict_category=strict_category,
+                )
             except Exception as exc:
                 last_message = f"{provider.name} persist failed: {exc}"
                 continue
-            if not persisted["productIds"]:
-                continue
-            ranked_ids, exact_count, filtered_count = rank_product_ids_for_query(
-                persisted["productIds"],
-                ranking_query,
-                category_id=category_id,
-                strict_category=strict_category,
-            )
-            filtered_out += filtered_count
-            exact_match_count += exact_count
+            ranked_ids = persisted["productIds"]
+            filtered_out += int(persisted["filteredOutCount"])
+            exact_match_count += int(persisted["exactMatchCount"])
             if not ranked_ids:
                 continue
             return {
@@ -786,20 +853,20 @@ class CatalogJobRunner:
                     )
                 continue
             try:
-                persisted = await self._persist_products(result.items)
+                persisted = await self._rank_and_persist_products(
+                    result.items,
+                    ranking_query=ranking_query,
+                    category_id=category_id,
+                    strict_category=strict_category,
+                )
             except Exception:
                 for url in urls:
                     mark_discovery_failure(url, provider_name, "provider_persist_failed")
                 continue
             category_judge_used = category_judge_used or bool(persisted["aiCategoryJudgeUsed"])
-            ranked_ids, exact_count, filtered_count = rank_product_ids_for_query(
-                persisted["productIds"],
-                ranking_query,
-                category_id=category_id,
-                strict_category=strict_category,
-            )
-            exact_match_count += exact_count
-            filtered_out_count += filtered_count
+            ranked_ids = persisted["productIds"]
+            exact_match_count += int(persisted["exactMatchCount"])
+            filtered_out_count += int(persisted["filteredOutCount"])
             if not ranked_ids:
                 for url in urls:
                     mark_discovery_failure(url, provider_name, "provider_products_filtered")
@@ -1519,6 +1586,9 @@ class CatalogJobRunner:
         for query_text in self._baseline_queries_for_category(category_id):
             if current_count >= target_count:
                 break
+            context_key = self._search_context_key(query_text, category_id)
+            query_variants = expand_query_variants(query_text, category_id)
+            clear_query_results(context_key)
             page_runs: list[dict[str, Any]] = []
             for provider_page in range(1, 4):
                 if current_count >= target_count:
@@ -1541,6 +1611,29 @@ class CatalogJobRunner:
                         "message": result.get("message"),
                     }
                 )
+                if result.get("acceptedIds"):
+                    if count_query_results(context_key) == 0:
+                        save_query_results(
+                            context_key,
+                            query_text,
+                            1,
+                            result.get("provider") or "cache",
+                            result["acceptedIds"],
+                            query_kind="search",
+                            category_id=category_id,
+                            query_variants=query_variants,
+                        )
+                    else:
+                        append_query_results(
+                            context_key,
+                            query_text,
+                            provider=result.get("provider") or "cache",
+                            product_ids=result["acceptedIds"],
+                            page_size=fetch_size,
+                            query_kind="search",
+                            category_id=category_id,
+                            query_variants=query_variants,
+                        )
                 if next_count <= current_count and not result.get("acceptedIds"):
                     current_count = next_count
                     break
@@ -2093,6 +2186,9 @@ class CatalogJobRunner:
             "pageSize": page_size,
             "hasMore": False,
             "total": 0,
+            "groupCode": normalize_whitespace(product.get("collectionCode")) or None,
+            "groupMatchCount": 0,
+            "fallbackUsed": False,
         }
 
 

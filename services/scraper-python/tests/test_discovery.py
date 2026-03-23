@@ -440,8 +440,16 @@ class DiscoveryTests(unittest.TestCase):
             AsyncMock(return_value=ProviderSearchResult(provider="Walmart", items=[walmart_product])),
         ), patch.object(
             runner,
-            "_persist_products",
-            AsyncMock(return_value={"productIds": [product_id], "aiCategoryJudgeUsed": False}),
+            "_rank_and_persist_products",
+            AsyncMock(
+                return_value={
+                    "productIds": [product_id],
+                    "exactMatchCount": 1,
+                    "filteredOutCount": 0,
+                    "aiCategoryJudgeUsed": False,
+                    "resolvedCategoryId": "electronics",
+                }
+            ),
         ):
             result = asyncio.run(
                 runner._run_term_search(
@@ -621,11 +629,23 @@ class DiscoveryTests(unittest.TestCase):
             request_json={"queries": "bath towel target"},
         )
 
-        async def persist_products(items):
+        async def rank_and_persist(items, **kwargs):
             first_title = items[0].title
             if "Threshold" in first_title:
-                return {"productIds": [target_id], "aiCategoryJudgeUsed": False}
-            return {"productIds": [walmart_id], "aiCategoryJudgeUsed": False}
+                return {
+                    "productIds": [target_id],
+                    "exactMatchCount": 1,
+                    "filteredOutCount": 0,
+                    "aiCategoryJudgeUsed": False,
+                    "resolvedCategoryId": "home",
+                }
+            return {
+                "productIds": [walmart_id],
+                "exactMatchCount": 1,
+                "filteredOutCount": 0,
+                "aiCategoryJudgeUsed": False,
+                "resolvedCategoryId": "home",
+            }
 
         with patch.object(jobs_module, "discovery_is_active", lambda: True), patch.object(
             jobs_module.apify_client,
@@ -666,8 +686,8 @@ class DiscoveryTests(unittest.TestCase):
             AsyncMock(return_value=ProviderSearchResult(provider="walmart_requests", items=[walmart_product])),
         ), patch.object(
             runner,
-            "_persist_products",
-            AsyncMock(side_effect=persist_products),
+            "_rank_and_persist_products",
+            AsyncMock(side_effect=rank_and_persist),
         ):
             payload = asyncio.run(runner.search("towel", page=1, page_size=20))
 
@@ -736,8 +756,14 @@ class DiscoveryTests(unittest.TestCase):
             query_variants=jobs_module.expand_query_variants("towel"),
         )
 
-        async def persist_products(items):
-            return {"productIds": [page_two_id], "aiCategoryJudgeUsed": False}
+        async def rank_and_persist(items, **kwargs):
+            return {
+                "productIds": [page_two_id],
+                "exactMatchCount": 1,
+                "filteredOutCount": 0,
+                "aiCategoryJudgeUsed": False,
+                "resolvedCategoryId": "home",
+            }
 
         with patch.object(
             runner,
@@ -774,8 +800,8 @@ class DiscoveryTests(unittest.TestCase):
             AsyncMock(return_value=ProviderSearchResult(provider="target_requests", items=[page_two_product])),
         ), patch.object(
             runner,
-            "_persist_products",
-            AsyncMock(side_effect=persist_products),
+            "_rank_and_persist_products",
+            AsyncMock(side_effect=rank_and_persist),
         ):
             payload = asyncio.run(runner.search("towel", page=2, page_size=1))
 
@@ -821,19 +847,19 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(payload["page"], 2)
         self.assertEqual(related_mock.call_args.kwargs["page"], 2)
 
-    def test_get_related_returns_hybrid_cross_category_results(self):
+    def test_get_related_returns_hybrid_same_category_results(self):
         base_id = self._seed_product(
-            url_suffix="rubiks-cube-classic",
-            title="Rubik's Cube The Original 3x3 Cube",
-            description="Classic Rubik puzzle cube brain teaser",
+            url_suffix="rubiks-cube-brain-teaser-puzzle",
+            title="Rubik's Cube Brain Teaser Puzzle",
+            description="Classic Rubik cube puzzle toy for brain teaser fun",
             category_id="toys",
             tags=["rubik", "cube", "puzzle"],
         )
         related_id = self._seed_product(
-            url_suffix="rubiks-speed-cube",
-            title="Rubik's 3x3 Speed Cube",
-            description="Magnetic Rubik speed cube",
-            category_id="others",
+            url_suffix="rubiks-puzzle-cube-toy",
+            title="Rubik's Puzzle Cube Toy",
+            description="Classic Rubik cube puzzle toy for brain teaser fun",
+            category_id="toys",
             tags=["rubik", "cube", "speed cube"],
         )
         runner = jobs_module.CatalogJobRunner()
@@ -946,6 +972,311 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIsNotNone(payload)
         assert payload is not None
         self.assertEqual([item["id"] for item in payload["items"]], [search_related_id])
+
+    def test_run_term_search_forces_requested_batch_category_for_all_accepted_products(self):
+        runner = jobs_module.CatalogJobRunner()
+        grouped_products = [
+            ProviderProduct(
+                provider="Target",
+                source_url="https://www.target.com/p/rubiks-cube-original/-/A-9011",
+                canonical_source_url="https://www.target.com/p/rubiks-cube-original/-/A-9011",
+                title="Rubik's Cube Original 3x3",
+                description="Classic cube puzzle toy",
+                price=14.99,
+                currency="USD",
+                category_id="toys",
+                category="Toys",
+                brand="Rubik's",
+                source_image_url="https://images.example.com/rubiks-cube-original.jpg",
+                rating=4.8,
+                review_count=88,
+                tags=["rubik", "cube", "puzzle"],
+                family_key="rubik-family",
+            ),
+            ProviderProduct(
+                provider="Target",
+                source_url="https://www.target.com/p/rubiks-speed-cube/-/A-9012",
+                canonical_source_url="https://www.target.com/p/rubiks-speed-cube/-/A-9012",
+                title="Rubik's Speed Cube Puzzle",
+                description="Speed cube scraped into others",
+                price=16.99,
+                currency="USD",
+                category_id="others",
+                category="Others",
+                brand="Rubik's",
+                source_image_url="https://images.example.com/rubiks-speed-cube.jpg",
+                rating=4.7,
+                review_count=41,
+                tags=["rubik", "cube", "speed cube"],
+                family_key="rubik-family",
+            ),
+        ]
+
+        async def fake_cache_image(image_url: str):
+            slug = Path(image_url).stem
+            return {
+                "local_image_key": f"img-{slug}",
+                "image_mime": "image/jpeg",
+                "image_width": 640,
+                "image_height": 640,
+            }
+
+        with patch.object(jobs_module, "cache_image", AsyncMock(side_effect=fake_cache_image)), patch.object(
+            runner._provider_map["target_requests"],
+            "search",
+            AsyncMock(return_value=ProviderSearchResult(provider="target_requests", items=grouped_products)),
+        ):
+            result = asyncio.run(
+                runner._run_term_search(
+                    search_term="rubik cube",
+                    provider_page=1,
+                    fetch_size=8,
+                    ranking_query="rubik cube",
+                    category_id="toys",
+                    strict_category=True,
+                    provider_names=["target_requests"],
+                )
+            )
+
+        self.assertEqual(len(result["acceptedIds"]), 2)
+        stored_products = [db_module.get_product(product_id) for product_id in result["acceptedIds"]]
+        self.assertTrue(all(product is not None and product["categoryId"] == "toys" for product in stored_products))
+
+    def test_search_show_more_reuses_active_collection_code_for_appended_results(self):
+        first_id = self._seed_product(
+            url_suffix="chair-one",
+            title="Accent Chair One",
+            description="Living room accent chair",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        second_id = self._seed_product(
+            url_suffix="chair-two",
+            title="Accent Chair Two",
+            description="Living room accent chair",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        third_id = self._seed_product(
+            url_suffix="chair-three",
+            title="Accent Chair Three",
+            description="Living room accent chair",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        context_key = runner._search_context_key("chair")
+        cursor = {
+            "variantIndex": 0,
+            "variants": [{"term": "chair", "page": 1, "exhausted": True}],
+            "matchingSource": "expanded",
+            "exactMatchCount": 1,
+            "filteredOutCount": 0,
+            "categoryJudgeUsed": False,
+            "discoveryPagination": {
+                "provider": "searxng",
+                "seedQueries": ["chair"],
+                "nextPageBySeed": {"chair": 1},
+                "exhaustedSeeds": [],
+                "seedIndex": 0,
+            },
+        }
+        db_module.save_query_results(
+            context_key,
+            "chair",
+            1,
+            "cache",
+            [first_id, second_id],
+            next_page_token_json=json.dumps(cursor),
+            query_kind="search",
+            category_id="home",
+            query_variants=jobs_module.expand_query_variants("chair"),
+        )
+        metadata = db_module.get_query_metadata(context_key)
+        assert metadata is not None
+        collection_code = metadata["active_collection_code"]
+
+        with patch.object(
+            runner,
+            "_fetch_searxng_hits",
+            AsyncMock(
+                side_effect=[
+                    {"hits": [{"title": "Accent Chair Three", "url": "https://example.com/chair-three"}]},
+                    {"hits": []},
+                ]
+            ),
+        ), patch.object(
+            runner,
+            "_extract_discovery_products",
+            AsyncMock(
+                side_effect=[
+                    {
+                        "acceptedIds": [third_id],
+                        "candidateUrlCount": 1,
+                        "acceptedUrlCount": 1,
+                        "domainsConsidered": ["example.com"],
+                        "domainsAccepted": ["example.com"],
+                        "exactMatchCount": 1,
+                        "filteredOutCount": 0,
+                        "categoryJudgeUsed": False,
+                    },
+                    {
+                        "acceptedIds": [],
+                        "candidateUrlCount": 0,
+                        "acceptedUrlCount": 0,
+                        "domainsConsidered": [],
+                        "domainsAccepted": [],
+                        "exactMatchCount": 0,
+                        "filteredOutCount": 0,
+                        "categoryJudgeUsed": False,
+                    },
+                ]
+            ),
+        ):
+            asyncio.run(
+                runner._ensure_search_show_more_results(
+                    context_key=context_key,
+                    display_query="chair",
+                    page=2,
+                    page_size=2,
+                    category_id="home",
+                    provider_variants=jobs_module.expand_query_variants("chair"),
+                    cursor=cursor,
+                )
+            )
+
+        refreshed_metadata = db_module.get_query_metadata(context_key)
+        assert refreshed_metadata is not None
+        self.assertEqual(refreshed_metadata["active_collection_code"], collection_code)
+        third_product = db_module.get_product(third_id)
+        self.assertIsNotNone(third_product)
+        assert third_product is not None
+        self.assertEqual(third_product["collectionCode"], collection_code)
+        first_product = db_module.get_product(first_id)
+        second_product = db_module.get_product(second_id)
+        self.assertEqual(first_product["collectionCode"], collection_code)
+        self.assertEqual(second_product["collectionCode"], collection_code)
+
+    def test_reseed_category_baseline_assigns_collection_code_to_query_batch(self):
+        first_id = self._seed_product(
+            url_suffix="baseline-chair-one",
+            title="Baseline Accent Chair One",
+            description="Living room accent chair",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        second_id = self._seed_product(
+            url_suffix="baseline-chair-two",
+            title="Baseline Accent Chair Two",
+            description="Living room accent chair",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        third_id = self._seed_product(
+            url_suffix="baseline-chair-three",
+            title="Baseline Accent Chair Three",
+            description="Living room accent chair",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        context_key = runner._search_context_key("accent chair", "home")
+
+        with patch.object(
+            runner,
+            "_baseline_queries_for_category",
+            return_value=["accent chair"],
+        ), patch.object(
+            runner,
+            "_run_term_search",
+            AsyncMock(
+                side_effect=[
+                    {
+                        "provider": "target_requests",
+                        "providerNames": ["target_requests"],
+                        "acceptedIds": [first_id, second_id],
+                        "message": None,
+                        "filteredOutCount": 0,
+                        "exactMatchCount": 2,
+                        "categoryJudgeUsed": False,
+                    },
+                    {
+                        "provider": "target_requests",
+                        "providerNames": ["target_requests"],
+                        "acceptedIds": [third_id],
+                        "message": None,
+                        "filteredOutCount": 0,
+                        "exactMatchCount": 1,
+                        "categoryJudgeUsed": False,
+                    },
+                    {
+                        "provider": None,
+                        "providerNames": ["target_requests"],
+                        "acceptedIds": [],
+                        "message": "done",
+                        "filteredOutCount": 0,
+                        "exactMatchCount": 0,
+                        "categoryJudgeUsed": False,
+                    },
+                ]
+            ),
+        ):
+            summary = asyncio.run(runner._reseed_category_baseline("home", target_count=10))
+
+        metadata = db_module.get_query_metadata(context_key)
+        assert metadata is not None
+        collection_code = metadata["active_collection_code"]
+        self.assertIsNotNone(collection_code)
+        self.assertEqual(summary["queriesRun"][0]["query"], "accent chair")
+        for product_id in (first_id, second_id, third_id):
+            product = db_module.get_product(product_id)
+            self.assertIsNotNone(product)
+            assert product is not None
+            self.assertEqual(product["collectionCode"], collection_code)
+
+    def test_get_related_prefers_same_collection_results_before_fallback(self):
+        anchor_id = self._seed_product(
+            url_suffix="harbor-chair-anchor",
+            title="Harbor Accent Chair",
+            description="Modern accent chair for living room seating",
+            category_id="home",
+            tags=["chair", "accent", "living room"],
+        )
+        grouped_id = self._seed_product(
+            url_suffix="harbor-chair-linen",
+            title="Harbor Accent Chair Linen",
+            description="Matching accent chair collected with the anchor product",
+            category_id="home",
+            tags=["chair", "accent", "linen"],
+        )
+        fallback_id = self._seed_product(
+            url_suffix="modern-chair-fallback",
+            title="Modern Accent Lounge Chair",
+            description="Same-category fallback result",
+            category_id="home",
+            tags=["chair", "accent", "lounge"],
+        )
+        runner = jobs_module.CatalogJobRunner()
+        db_module.save_query_results(
+            "search::home::harbor-chair",
+            "harbor chair",
+            1,
+            "cache",
+            [anchor_id, grouped_id],
+            query_kind="search",
+            category_id="home",
+            query_variants=["harbor chair"],
+        )
+
+        payload = asyncio.run(runner.get_related(anchor_id, page=1, page_size=2))
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["groupMatchCount"], 1)
+        self.assertTrue(payload["fallbackUsed"])
+        self.assertIsNotNone(payload["groupCode"])
+        self.assertEqual(payload["items"][0]["id"], grouped_id)
+        self.assertEqual(payload["items"][1]["id"], fallback_id)
 
     def test_search_falls_back_cleanly_when_discovery_fails(self):
         product_id = self._seed_product(

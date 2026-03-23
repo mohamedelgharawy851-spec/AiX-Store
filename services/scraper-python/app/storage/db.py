@@ -217,6 +217,7 @@ def initialize_database() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _write_connection() as connection:
         if postgres_enabled():
+            migrated = False
             try:
                 connection.executescript(POSTGRES_SCHEMA_PATH.read_text("utf-8"))
             except Exception as exc:
@@ -225,13 +226,19 @@ def initialize_database() -> None:
                     "Schema init skipped (already exists or timeout): %s",
                     exc,
                 )
+            migrated = _ensure_postgres_schema_migrations(connection) or migrated
+            _purge_products_without_images(connection)
             _invalidate_related_derived_caches(connection)
             _repair_invalid_product_pricing(connection)
+            if migrated:
+                connection.execute("DELETE FROM query_products")
+                connection.execute("DELETE FROM queries")
             connection.commit()
             return
         else:
             connection.executescript(SCHEMA_PATH.read_text("utf-8"))
             migrated = _ensure_schema_migrations(connection)
+        _purge_products_without_images(connection)
         _invalidate_related_derived_caches(connection)
         _repair_invalid_product_pricing(connection)
         _populate_variant_metadata(connection)
@@ -242,6 +249,103 @@ def initialize_database() -> None:
             connection.execute("DELETE FROM query_products")
             connection.execute("DELETE FROM queries")
         connection.commit()
+
+
+def _purge_products_by_ids(
+    connection: sqlite3.Connection,
+    product_ids: list[str],
+    *,
+    canonical_source_urls: list[str] | None = None,
+) -> int:
+    unique_product_ids = [product_id for product_id in dict.fromkeys(product_ids) if normalize_whitespace(product_id)]
+    if not unique_product_ids:
+        return 0
+    unique_canonical_urls = [
+        normalize_whitespace(url)
+        for url in dict.fromkeys(canonical_source_urls or [])
+        if normalize_whitespace(url)
+    ]
+    product_placeholders = ",".join("?" for _ in unique_product_ids)
+
+    connection.execute(
+        f"DELETE FROM related_products WHERE product_id IN ({product_placeholders}) OR related_product_id IN ({product_placeholders})",
+        (*unique_product_ids, *unique_product_ids),
+    )
+    connection.execute(
+        f"DELETE FROM query_products WHERE product_id IN ({product_placeholders})",
+        unique_product_ids,
+    )
+    connection.execute(
+        f"DELETE FROM collection_group_products WHERE product_id IN ({product_placeholders})",
+        unique_product_ids,
+    )
+    connection.execute(
+        f"DELETE FROM reviews WHERE product_id IN ({product_placeholders})",
+        unique_product_ids,
+    )
+    connection.execute(
+        f"DELETE FROM user_recommendations WHERE product_id IN ({product_placeholders})",
+        unique_product_ids,
+    )
+    if unique_canonical_urls:
+        url_placeholders = ",".join("?" for _ in unique_canonical_urls)
+        connection.execute(
+            f"DELETE FROM user_favorites WHERE product_id IN ({product_placeholders}) OR canonical_source_url IN ({url_placeholders})",
+            (*unique_product_ids, *unique_canonical_urls),
+        )
+        connection.execute(
+            f"DELETE FROM user_events WHERE product_id IN ({product_placeholders}) OR canonical_source_url IN ({url_placeholders})",
+            (*unique_product_ids, *unique_canonical_urls),
+        )
+    else:
+        connection.execute(
+            f"DELETE FROM user_favorites WHERE product_id IN ({product_placeholders})",
+            unique_product_ids,
+        )
+        connection.execute(
+            f"DELETE FROM user_events WHERE product_id IN ({product_placeholders})",
+            unique_product_ids,
+        )
+    deleted = connection.execute(
+        f"DELETE FROM products WHERE id IN ({product_placeholders})",
+        unique_product_ids,
+    ).rowcount
+    connection.execute("DELETE FROM featured_offer_snapshots")
+    connection.execute(
+        """
+        DELETE FROM collection_groups
+        WHERE code NOT IN (
+          SELECT DISTINCT group_code
+          FROM collection_group_products
+        )
+        """
+    )
+    connection.execute(
+        """
+        DELETE FROM queries
+        WHERE normalized_query NOT IN (
+          SELECT DISTINCT normalized_query
+          FROM query_products
+        )
+        """
+    )
+    return int(deleted or 0)
+
+
+def _purge_products_without_images(connection: sqlite3.Connection) -> int:
+    rows = connection.execute(
+        "SELECT id, canonical_source_url, source_image_url, image_gallery_json FROM products"
+    ).fetchall()
+    stale_rows = [row for row in rows if not _row_has_any_image(row)]
+    if not stale_rows:
+        return 0
+    deleted = _purge_products_by_ids(
+        connection,
+        [str(row["id"]) for row in stale_rows if row["id"]],
+        canonical_source_urls=[normalize_whitespace(row["canonical_source_url"]) for row in stale_rows],
+    )
+    logger.info("Purged %s imageless products from the database.", deleted)
+    return deleted
 
 
 def _invalidate_related_derived_caches(connection: sqlite3.Connection) -> None:
@@ -308,6 +412,8 @@ def reset_product_linked_state(*, preserve_search_history: bool = True) -> dict[
             deleted["discovery_queries"] = _count_table_rows(connection, "discovery_queries")
             deleted["discovery_suppression"] = _count_table_rows(connection, "discovery_suppression")
             deleted["featured_offer_snapshots"] = _count_table_rows(connection, "featured_offer_snapshots")
+            deleted["collection_groups"] = _count_table_rows(connection, "collection_groups")
+            deleted["collection_group_products"] = _count_table_rows(connection, "collection_group_products")
             deleted["products"] = _count_table_rows(connection, "products")
             deleted["user_favorites"] = _count_table_rows(connection, "user_favorites")
             deleted["user_recommendations"] = _count_table_rows(connection, "user_recommendations")
@@ -328,6 +434,8 @@ def reset_product_linked_state(*, preserve_search_history: bool = True) -> dict[
             connection.execute("DELETE FROM discovery_queries")
             connection.execute("DELETE FROM discovery_suppression")
             connection.execute("DELETE FROM featured_offer_snapshots")
+            connection.execute("DELETE FROM collection_group_products")
+            connection.execute("DELETE FROM collection_groups")
             connection.execute("DELETE FROM user_favorites")
             connection.execute("DELETE FROM user_recommendations")
             if preserve_search_history:
@@ -367,6 +475,143 @@ def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
     return {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
+def _ensure_postgres_schema_migrations(connection: sqlite3.Connection) -> bool:
+    if not postgres_enabled():
+        return False
+    migrated = False
+    product_columns = _table_columns(connection, "products")
+    product_column_defs = {
+        "source_category_id": "TEXT",
+        "source_category": "TEXT",
+        "canonical_category_id": "TEXT NOT NULL DEFAULT 'others'",
+        "canonical_category": "TEXT NOT NULL DEFAULT 'Others'",
+        "category_confidence": "DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "category_scores_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+        "matched_terms_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "category_source": "TEXT NOT NULL DEFAULT 'rules'",
+        "ai_category_id": "TEXT",
+        "ai_category_confidence": "DOUBLE PRECISION",
+        "ai_category_reason": "TEXT",
+        "ai_category_updated_at": "TIMESTAMPTZ",
+        "image_gallery_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "family_key": "TEXT",
+        "variant_label": "TEXT",
+        "variant_attributes_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+        "collection_code": "TEXT",
+    }
+    for column_name, column_def in product_column_defs.items():
+        if column_name not in product_columns:
+            connection.execute(f"ALTER TABLE products ADD COLUMN {column_name} {column_def}")
+            migrated = True
+
+    query_columns = _table_columns(connection, "queries")
+    query_column_defs = {
+        "query_kind": "TEXT NOT NULL DEFAULT 'search'",
+        "category_id": "TEXT",
+        "query_variants_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "active_collection_code": "TEXT",
+    }
+    for column_name, column_def in query_column_defs.items():
+        if column_name not in query_columns:
+            connection.execute(f"ALTER TABLE queries ADD COLUMN {column_name} {column_def}")
+            migrated = True
+
+    user_event_columns = _table_columns(connection, "user_events")
+    user_event_column_defs = {
+        "session_id": "TEXT",
+        "canonical_source_url": "TEXT",
+        "product_snapshot_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+    }
+    for column_name, column_def in user_event_column_defs.items():
+        if column_name not in user_event_columns:
+            connection.execute(f"ALTER TABLE user_events ADD COLUMN {column_name} {column_def}")
+            migrated = True
+
+    discovery_query_columns = _table_columns(connection, "discovery_queries")
+    discovery_query_defs = {
+        "provider": "TEXT NOT NULL DEFAULT 'apify'",
+        "request_json": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+    }
+    for column_name, column_def in discovery_query_defs.items():
+        if column_name not in discovery_query_columns:
+            connection.execute(f"ALTER TABLE discovery_queries ADD COLUMN {column_name} {column_def}")
+            migrated = True
+
+    discovery_hit_columns = _table_columns(connection, "discovery_hits")
+    discovery_hit_defs = {
+        "source": "TEXT",
+        "source_title": "TEXT",
+        "source_snippet": "TEXT",
+        "source_rank": "INTEGER",
+    }
+    for column_name, column_def in discovery_hit_defs.items():
+        if column_name not in discovery_hit_columns:
+            connection.execute(f"ALTER TABLE discovery_hits ADD COLUMN {column_name} {column_def}")
+            migrated = True
+
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_queries_kind_category ON queries(query_kind, category_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_products_collection_code ON products(collection_code)")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_events_user_session_created ON user_events(user_id, session_id, created_at DESC)"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_favorites_user_url ON user_favorites(user_id, canonical_source_url)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_favorites_user_created ON user_favorites(user_id, created_at DESC)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS featured_offer_snapshots (
+          period_key TEXT PRIMARY KEY,
+          product_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+          generated_at TIMESTAMPTZ NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_featured_offer_snapshots_expires ON featured_offer_snapshots(expires_at)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collection_groups (
+          code TEXT PRIMARY KEY,
+          context_key TEXT NOT NULL,
+          display_query TEXT NOT NULL,
+          query_kind TEXT NOT NULL,
+          requested_category_id TEXT,
+          resolved_category_id TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_collection_groups_context ON collection_groups(context_key, updated_at DESC)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collection_group_products (
+          group_code TEXT NOT NULL REFERENCES collection_groups(code) ON DELETE CASCADE,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          rank INTEGER NOT NULL,
+          page_number INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL,
+          PRIMARY KEY (group_code, product_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_collection_group_products_group_rank
+        ON collection_group_products(group_code, page_number, rank)
+        """
+    )
+    return migrated
+
+
 def _ensure_schema_migrations(connection: sqlite3.Connection) -> bool:
     if postgres_enabled():
         return False
@@ -389,6 +634,7 @@ def _ensure_schema_migrations(connection: sqlite3.Connection) -> bool:
         "family_key": "TEXT",
         "variant_label": "TEXT",
         "variant_attributes_json": "TEXT NOT NULL DEFAULT '{}'",
+        "collection_code": "TEXT",
     }
     for column_name, column_def in product_column_defs.items():
         if column_name not in product_columns:
@@ -400,6 +646,7 @@ def _ensure_schema_migrations(connection: sqlite3.Connection) -> bool:
         "query_kind": "TEXT NOT NULL DEFAULT 'search'",
         "category_id": "TEXT",
         "query_variants_json": "TEXT NOT NULL DEFAULT '[]'",
+        "active_collection_code": "TEXT",
     }
     for column_name, column_def in query_column_defs.items():
         if column_name not in query_columns:
@@ -442,6 +689,7 @@ def _ensure_schema_migrations(connection: sqlite3.Connection) -> bool:
             migrated = True
 
     connection.execute("CREATE INDEX IF NOT EXISTS idx_queries_kind_category ON queries(query_kind, category_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_products_collection_code ON products(collection_code)")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_user_events_user_session_created ON user_events(user_id, session_id, created_at DESC)"
     )
@@ -463,6 +711,44 @@ def _ensure_schema_migrations(connection: sqlite3.Connection) -> bool:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_featured_offer_snapshots_expires ON featured_offer_snapshots(expires_at)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collection_groups (
+          code TEXT PRIMARY KEY,
+          context_key TEXT NOT NULL,
+          display_query TEXT NOT NULL,
+          query_kind TEXT NOT NULL,
+          requested_category_id TEXT,
+          resolved_category_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_collection_groups_context ON collection_groups(context_key, updated_at DESC)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collection_group_products (
+          group_code TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          rank INTEGER NOT NULL,
+          page_number INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (group_code, product_id),
+          FOREIGN KEY (group_code) REFERENCES collection_groups(code),
+          FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_collection_group_products_group_rank
+        ON collection_group_products(group_code, page_number, rank)
+        """
     )
     return migrated
 
@@ -663,7 +949,7 @@ def _decode_image_gallery(value: str | None, primary_url: str | None = None) -> 
 
 
 def _has_any_image_urls(primary_url: str | None, gallery_urls: list[str] | None = None) -> bool:
-    return bool(_merge_image_gallery_urls(primary_url, *(gallery_urls or [] for _ in []) if False else (gallery_urls or [])))
+    return bool(_merge_image_gallery_urls(primary_url, gallery_urls or []))
 
 
 def _resolved_primary_image_url(source_image_url: str | None, gallery_urls: list[str] | None = None) -> str:
@@ -671,8 +957,33 @@ def _resolved_primary_image_url(source_image_url: str | None, gallery_urls: list
     return merged_urls[0] if merged_urls else ""
 
 
+def _record_gallery_urls(record: sqlite3.Row | dict[str, Any]) -> list[str]:
+    if isinstance(record, dict):
+        gallery_value = record.get("imageGallery")
+        if isinstance(gallery_value, list):
+            gallery_urls: list[str] = []
+            for item in gallery_value:
+                if isinstance(item, dict):
+                    gallery_urls.append(normalize_whitespace(item.get("url")))
+                else:
+                    gallery_urls.append(normalize_whitespace(item))
+            return _dedupe_strings(gallery_urls)
+    return _decode_json_array(_record_value(record, "image_gallery_json"))
+
+
+def _record_has_any_image(record: sqlite3.Row | dict[str, Any]) -> bool:
+    primary_url = normalize_whitespace(
+        _record_value(record, "source_image_url", "sourceImageUrl", "imageUrl", "url")
+    )
+    return _has_any_image_urls(primary_url, _record_gallery_urls(record))
+
+
 def _row_has_any_image(row: sqlite3.Row) -> bool:
-    return bool(_decode_image_gallery(row["image_gallery_json"], row["source_image_url"]))
+    return _record_has_any_image(row)
+
+
+def _filter_rows_with_images(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    return [row for row in rows if _row_has_any_image(row)]
 
 
 def _find_nested_value(payload: Any, candidate_keys: set[str]) -> str | None:
@@ -832,6 +1143,29 @@ def _dedupe_product_list(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [selected[key] for key in order]
 
 
+def _classification_debug_payload(
+    *,
+    classification: dict[str, Any],
+    ai_judgment: dict[str, Any],
+    final_category_id: str,
+) -> dict[str, Any]:
+    return {
+        "individualCategoryId": str(final_category_id),
+        "individualCategory": category_name(final_category_id),
+        "individualCategorySource": str(ai_judgment.get("category_source") or "rules"),
+        "individualCategoryConfidence": float(
+            ai_judgment["ai_category_confidence"]
+            if ai_judgment.get("used") and ai_judgment.get("ai_category_confidence") is not None
+            else classification.get("confidence") or 0.0
+        ),
+        "individualCategoryScores": classification.get("scores") or {},
+        "individualMatchedTerms": classification.get("matched_terms") or [],
+        "requestedCategoryId": None,
+        "batchResolvedCategoryId": str(final_category_id),
+        "batchResolvedCategoryReason": "individual",
+    }
+
+
 def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dict[str, Any]:
     normalized_price, normalized_original_price = normalize_offer_prices(product.price, product.original_price)
     if normalized_price is None:
@@ -854,6 +1188,9 @@ def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dic
         variant_attributes,
     )
     image_gallery_urls = _merge_image_gallery_urls(product.source_image_url, product.image_gallery_urls)
+    if not image_gallery_urls:
+        return {}
+    resolved_primary_image_url = image_gallery_urls[0]
     classification = classify_category(
         title,
         description,
@@ -883,6 +1220,12 @@ def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dic
             rule_classification=classification,
         )
     final_category_id = str(ai_judgment["category_id"])
+    raw_json_with_debug = dict(raw_json)
+    raw_json_with_debug["classification_debug"] = _classification_debug_payload(
+        classification=classification,
+        ai_judgment=ai_judgment,
+        final_category_id=final_category_id,
+    )
     current_time = now_iso()
     return {
         "id": product_id,
@@ -916,7 +1259,8 @@ def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dic
         "ai_category_reason": ai_judgment["ai_category_reason"],
         "ai_category_updated_at": ai_judgment["ai_category_updated_at"],
         "brand": normalize_whitespace(product.brand) or None,
-        "source_image_url": product.source_image_url,
+        "collection_code": None,
+        "source_image_url": resolved_primary_image_url,
         "image_gallery_json": json_dumps(image_gallery_urls),
         "family_key": family_key,
         "variant_label": variant_label,
@@ -926,11 +1270,20 @@ def _product_to_row(product: ProviderProduct, image_meta: dict[str, Any]) -> dic
         "image_width": int(image_meta["image_width"]),
         "image_height": int(image_meta["image_height"]),
         "tags_json": json_dumps(tags),
-        "raw_json": json_dumps(raw_json),
+        "raw_json": json_dumps(raw_json_with_debug),
         "created_at": current_time,
         "updated_at": current_time,
         "last_verified_at": current_time,
         "is_active": 1,
+        "_individual_category_id": final_category_id,
+        "_individual_category_source": str(ai_judgment["category_source"]),
+        "_individual_category_confidence": float(
+            ai_judgment["ai_category_confidence"]
+            if ai_judgment["used"] and ai_judgment["ai_category_confidence"] is not None
+            else classification["confidence"]
+        ),
+        "_individual_category_scores": classification["scores"],
+        "_individual_matched_terms": classification["matched_terms"],
         "_ai_category_judge_used": bool(ai_judgment["invoked"]),
         "_ai_category_applied": bool(ai_judgment["used"]),
     }
@@ -999,6 +1352,7 @@ def _row_to_product(row: sqlite3.Row) -> dict[str, Any]:
         "sourceUrl": row["source_url"],
         "sourceImageUrl": row["source_image_url"],
         "imageGallery": image_gallery,
+        "collectionCode": normalize_whitespace(row["collection_code"]) or None,
         "familyKey": normalize_whitespace(row["family_key"]) or None,
         "variantLabel": variant_label,
         "variantAttributes": variant_attributes,
@@ -1044,6 +1398,7 @@ def _snapshot_from_product(product: dict[str, Any]) -> dict[str, Any]:
         "sourceUrl": product.get("sourceUrl"),
         "sourceImageUrl": product.get("sourceImageUrl"),
         "imageGallery": product.get("imageGallery") or [],
+        "collectionCode": product.get("collectionCode"),
         "familyKey": product.get("familyKey"),
         "variantLabel": product.get("variantLabel"),
         "variantAttributes": product.get("variantAttributes") or {},
@@ -1061,6 +1416,403 @@ def _snapshot_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
 def _restore_snapshot(value: str | None) -> dict[str, Any] | None:
     snapshot = _decode_json_object(value)
     return snapshot or None
+
+
+def prepare_product_candidates(
+    products: list[ProviderProduct],
+    image_meta_by_url: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    purge_canonical_urls: list[str] = []
+    ai_category_judge_used = False
+    ai_category_applied = False
+    for product in products:
+        canonical_source_url = normalize_whitespace(product.canonical_source_url or product.source_url)
+        resolved_gallery_urls = _merge_image_gallery_urls(product.source_image_url, product.image_gallery_urls)
+        if not resolved_gallery_urls:
+            if canonical_source_url:
+                purge_canonical_urls.append(canonical_source_url)
+            continue
+        resolved_primary_image_url = resolved_gallery_urls[0]
+        image_meta = (
+            image_meta_by_url.get(resolved_primary_image_url)
+            or image_meta_by_url.get(product.source_image_url)
+            or _fallback_image_meta(resolved_primary_image_url)
+        )
+        row = _product_to_row(product, image_meta)
+        if not row:
+            continue
+        ai_category_judge_used = ai_category_judge_used or bool(row.get("_ai_category_judge_used"))
+        ai_category_applied = ai_category_applied or bool(row.get("_ai_category_applied"))
+        candidates.append(row)
+    return {
+        "candidates": candidates,
+        "purgeCanonicalUrls": sorted(set(purge_canonical_urls)),
+        "aiCategoryJudgeUsed": ai_category_judge_used,
+        "aiCategoryApplied": ai_category_applied,
+    }
+
+
+def rank_product_candidates_for_query(
+    candidates: list[dict[str, Any]],
+    query_text: str,
+    category_id: str | None = None,
+    strict_category: bool = False,
+) -> tuple[list[dict[str, Any]], int, int]:
+    if not candidates:
+        return [], 0, 0
+    normalized_query = normalize_whitespace(query_text).lower()
+    query_tokens = tokenize(normalized_query)
+    query_category_id = str(classify_category(normalized_query)["category_id"])
+    query_variants = expand_query_variants(normalized_query, category_id)
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    filtered_out = 0
+    exact_match_count = 0
+    normalized_requested_category_id = normalize_whitespace(category_id).lower()
+    for candidate in candidates:
+        row_category_id = str(_record_value(candidate, "category_id", "categoryId") or "")
+        haystack_parts = _build_search_haystack_parts(candidate)
+        haystack = " ".join(haystack_parts)
+        haystack_tokens = _build_search_token_set(*haystack_parts)
+        score = 0.0
+        token_match_count = 0
+        strong_variant_match = False
+        strong_text_match = False
+        if _matches_phrase_or_token(normalized_query, haystack, haystack_tokens):
+            score += 5.0
+            exact_match_count += 1
+            strong_text_match = True
+        for token in query_tokens:
+            if singularize_token(token) in haystack_tokens:
+                score += 1.5
+                token_match_count += 1
+        for variant in query_variants[1:]:
+            if _matches_phrase_or_token(variant, haystack, haystack_tokens):
+                score += 3.2
+                strong_variant_match = True
+        if strong_variant_match:
+            exact_match_count += 1
+            strong_text_match = True
+        query_adjustment, query_specific_strong_match = _query_specific_adjustment(normalized_query, haystack)
+        score += query_adjustment
+        if query_specific_strong_match:
+            exact_match_count += 1
+            strong_text_match = True
+        strong_text_match = strong_text_match or token_match_count >= min(2, len(query_tokens))
+        if token_match_count <= 0 and not strong_text_match:
+            filtered_out += 1
+            continue
+        category_confidence = float(_record_value(candidate, "category_confidence", "categoryConfidence") or 0.0)
+        if category_confidence <= 0 and row_category_id == "others" and not strong_text_match:
+            filtered_out += 1
+            continue
+        if row_category_id == "others" and category_confidence < 0.45 and not strong_text_match:
+            filtered_out += 1
+            continue
+        if normalized_requested_category_id and row_category_id not in {normalized_requested_category_id, "others"} and not strong_text_match:
+            filtered_out += 1
+            continue
+        if query_category_id != "others" and row_category_id not in {query_category_id, "others"} and not strong_text_match:
+            filtered_out += 1
+            continue
+        if normalized_requested_category_id and row_category_id == normalized_requested_category_id:
+            score += 2.0
+        score += min(category_confidence, 8.0) * 0.6
+        score += float(_record_value(candidate, "rating") or 0.0) * 0.4
+        score += min(int(_record_value(candidate, "review_count", "reviewCount") or 0), 200) / 200.0
+        normalized_score = _normalize_search_score(score)
+        if normalized_score < 0.24 and not strong_text_match:
+            filtered_out += 1
+            continue
+        ranked.append((score, candidate))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [candidate for _, candidate in ranked], exact_match_count, filtered_out
+
+
+def resolve_batch_category(candidates: list[dict[str, Any]], requested_category_id: str | None = None) -> str:
+    normalized_requested_category_id = normalize_whitespace(requested_category_id).lower()
+    if normalized_requested_category_id and normalized_requested_category_id != "others":
+        return normalized_requested_category_id
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    strongest: dict[str, float] = {}
+    for candidate in candidates:
+        category_id = normalize_whitespace(_record_value(candidate, "category_id", "categoryId")).lower()
+        if not category_id or category_id == "others":
+            continue
+        confidence = float(_record_value(candidate, "category_confidence", "categoryConfidence") or 0.0)
+        totals[category_id] = totals.get(category_id, 0.0) + confidence
+        counts[category_id] = counts.get(category_id, 0) + 1
+        strongest[category_id] = max(strongest.get(category_id, 0.0), confidence)
+    if not totals:
+        return "others"
+    ordered = sorted(
+        totals.keys(),
+        key=lambda category_id: (totals[category_id], counts.get(category_id, 0), strongest.get(category_id, 0.0), category_id),
+        reverse=True,
+    )
+    return ordered[0]
+
+
+def _apply_batch_category_to_candidate(
+    candidate: dict[str, Any],
+    *,
+    resolved_category_id: str,
+    requested_category_id: str | None = None,
+    reason: str,
+) -> dict[str, Any]:
+    updated = dict(candidate)
+    individual_category_id = normalize_whitespace(updated.get("_individual_category_id") or updated.get("category_id")).lower() or "others"
+    updated["canonical_category_id"] = resolved_category_id
+    updated["canonical_category"] = category_name(resolved_category_id)
+    updated["category_id"] = resolved_category_id
+    updated["category"] = category_name(resolved_category_id)
+    if resolved_category_id == individual_category_id:
+        updated["category_source"] = updated.get("_individual_category_source") or updated.get("category_source") or "rules"
+    else:
+        updated["category_source"] = "batch"
+        if resolved_category_id == "others":
+            updated["category_confidence"] = 0.0
+        else:
+            updated["category_confidence"] = max(float(updated.get("category_confidence") or 0.0), 1.0)
+    raw_json = _decode_json_object(updated.get("raw_json"))
+    classification_debug = raw_json.get("classification_debug")
+    if not isinstance(classification_debug, dict):
+        classification_debug = {}
+    classification_debug["requestedCategoryId"] = normalize_whitespace(requested_category_id) or None
+    classification_debug["batchResolvedCategoryId"] = resolved_category_id
+    classification_debug["batchResolvedCategoryReason"] = reason
+    raw_json["classification_debug"] = classification_debug
+    updated["raw_json"] = json_dumps(raw_json)
+    return updated
+
+
+def apply_batch_category_to_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    resolved_category_id: str,
+    requested_category_id: str | None = None,
+) -> list[dict[str, Any]]:
+    normalized_requested_category_id = normalize_whitespace(requested_category_id).lower()
+    if normalized_requested_category_id and normalized_requested_category_id != "others":
+        reason = "requested_category"
+    elif resolved_category_id == "others":
+        reason = "all_candidates_other"
+    else:
+        reason = "dominant_batch_category"
+    return [
+        _apply_batch_category_to_candidate(
+            candidate,
+            resolved_category_id=resolved_category_id,
+            requested_category_id=requested_category_id,
+            reason=reason,
+        )
+        for candidate in candidates
+    ]
+
+
+def _purge_existing_products_by_canonical_urls(connection: sqlite3.Connection, canonical_urls: list[str]) -> int:
+    unique_urls = [normalize_whitespace(url) for url in dict.fromkeys(canonical_urls) if normalize_whitespace(url)]
+    if not unique_urls:
+        return 0
+    placeholders = ",".join("?" for _ in unique_urls)
+    rows = connection.execute(
+        f"SELECT id, canonical_source_url FROM products WHERE canonical_source_url IN ({placeholders})",
+        unique_urls,
+    ).fetchall()
+    if not rows:
+        return 0
+    return _purge_products_by_ids(
+        connection,
+        [str(row["id"]) for row in rows if row["id"]],
+        canonical_source_urls=[normalize_whitespace(row["canonical_source_url"]) for row in rows],
+    )
+
+
+def _preserve_existing_category_fields(
+    incoming_row: dict[str, Any],
+    existing_row: sqlite3.Row,
+) -> dict[str, Any]:
+    updated = dict(incoming_row)
+    for source_key, target_key in (
+        ("canonical_category_id", "canonical_category_id"),
+        ("canonical_category", "canonical_category"),
+        ("category_confidence", "category_confidence"),
+        ("category_scores_json", "category_scores_json"),
+        ("matched_terms_json", "matched_terms_json"),
+        ("category_id", "category_id"),
+        ("category", "category"),
+        ("category_source", "category_source"),
+        ("ai_category_id", "ai_category_id"),
+        ("ai_category_confidence", "ai_category_confidence"),
+        ("ai_category_reason", "ai_category_reason"),
+        ("ai_category_updated_at", "ai_category_updated_at"),
+    ):
+        updated[target_key] = existing_row[source_key]
+    raw_json = _decode_json_object(updated.get("raw_json"))
+    classification_debug = raw_json.get("classification_debug")
+    if not isinstance(classification_debug, dict):
+        classification_debug = {}
+    classification_debug["batchResolvedCategoryId"] = normalize_whitespace(existing_row["category_id"]) or "others"
+    classification_debug["batchResolvedCategoryReason"] = "preserved_existing_non_other_category"
+    raw_json["classification_debug"] = classification_debug
+    updated["raw_json"] = json_dumps(raw_json)
+    return updated
+
+
+def _apply_existing_category_precedence(
+    incoming_row: dict[str, Any],
+    existing_row: sqlite3.Row | None,
+    requested_category_id: str | None = None,
+) -> dict[str, Any]:
+    if not existing_row:
+        return incoming_row
+    explicit_requested_category = normalize_whitespace(requested_category_id).lower()
+    if explicit_requested_category and explicit_requested_category != "others":
+        return incoming_row
+    incoming_category_id = normalize_whitespace(incoming_row.get("category_id")).lower() or "others"
+    existing_category_id = normalize_whitespace(existing_row["category_id"]).lower() or "others"
+    if incoming_category_id == existing_category_id:
+        return incoming_row
+    if existing_category_id == "others" and incoming_category_id != "others":
+        return incoming_row
+    if existing_category_id != "others" and incoming_category_id == "others":
+        return _preserve_existing_category_fields(incoming_row, existing_row)
+    if existing_category_id != "others" and incoming_category_id != "others":
+        return _preserve_existing_category_fields(incoming_row, existing_row)
+    return incoming_row
+
+
+def upsert_prepared_product_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    requested_category_id: str | None = None,
+    purge_canonical_urls: list[str] | None = None,
+    with_meta: bool = False,
+) -> list[str] | dict[str, Any]:
+    if not candidates and not purge_canonical_urls:
+        return {"productIds": [], "aiCategoryJudgeUsed": False, "aiCategoryApplied": False} if with_meta else []
+    product_ids: list[str] = []
+    ai_category_judge_used = False
+    ai_category_applied = False
+    with _write_connection() as connection:
+        _purge_existing_products_by_canonical_urls(connection, purge_canonical_urls or [])
+        for candidate in candidates:
+            row = dict(candidate)
+            existing_row = connection.execute(
+                """
+                SELECT image_gallery_json, family_key, variant_label, variant_attributes_json,
+                       canonical_category_id, canonical_category, category_confidence, category_scores_json,
+                       matched_terms_json, category_id, category, category_source, ai_category_id,
+                       ai_category_confidence, ai_category_reason, ai_category_updated_at, collection_code
+                FROM products
+                WHERE canonical_source_url = ?
+                """,
+                (row["canonical_source_url"],),
+            ).fetchone()
+            if existing_row:
+                row["image_gallery_json"] = json_dumps(
+                    _merge_image_gallery_urls(
+                        row["source_image_url"],
+                        _decode_json_array(existing_row["image_gallery_json"]),
+                        _decode_json_array(row["image_gallery_json"]),
+                    )
+                )
+                if not row["family_key"]:
+                    row["family_key"] = normalize_whitespace(existing_row["family_key"]) or None
+                if not row["variant_label"]:
+                    row["variant_label"] = normalize_whitespace(existing_row["variant_label"]) or None
+                existing_variant_attributes = _decode_json_object(existing_row["variant_attributes_json"])
+                if existing_variant_attributes:
+                    merged_variant_attributes = {
+                        **existing_variant_attributes,
+                        **_decode_json_object(row["variant_attributes_json"]),
+                    }
+                    row["variant_attributes_json"] = json_dumps(merged_variant_attributes)
+                row = _apply_existing_category_precedence(row, existing_row, requested_category_id=requested_category_id)
+                if not normalize_whitespace(row.get("collection_code")):
+                    row["collection_code"] = normalize_whitespace(existing_row["collection_code"]) or None
+            ai_category_judge_used = ai_category_judge_used or bool(row.get("_ai_category_judge_used"))
+            ai_category_applied = ai_category_applied or bool(row.get("_ai_category_applied"))
+            product_ids.append(row["id"])
+            connection.execute(
+                """
+                INSERT INTO products (
+                  id, provider, source_url, canonical_source_url, title, slug, description,
+                  price_cents, original_price_cents, currency, rating, review_count, source_category_id,
+                  source_category, canonical_category_id, canonical_category, category_confidence, category_scores_json,
+                  matched_terms_json, category_id, category, category_source, ai_category_id, ai_category_confidence,
+                  ai_category_reason, ai_category_updated_at, brand, collection_code, source_image_url, image_gallery_json, family_key,
+                  variant_label, variant_attributes_json, local_image_key, image_mime, image_width,
+                  image_height, tags_json, raw_json, created_at, updated_at, last_verified_at, is_active
+                ) VALUES (
+                  :id, :provider, :source_url, :canonical_source_url, :title, :slug, :description,
+                  :price_cents, :original_price_cents, :currency, :rating, :review_count, :source_category_id,
+                  :source_category, :canonical_category_id, :canonical_category, :category_confidence, :category_scores_json,
+                  :matched_terms_json, :category_id, :category, :category_source, :ai_category_id, :ai_category_confidence,
+                  :ai_category_reason, :ai_category_updated_at, :brand, :collection_code, :source_image_url, :image_gallery_json, :family_key,
+                  :variant_label, :variant_attributes_json, :local_image_key, :image_mime, :image_width,
+                  :image_height, :tags_json, :raw_json, :created_at, :updated_at, :last_verified_at, :is_active
+                )
+                ON CONFLICT(canonical_source_url) DO UPDATE SET
+                  provider=excluded.provider,
+                  source_url=excluded.source_url,
+                  title=excluded.title,
+                  slug=excluded.slug,
+                  description=CASE
+                    WHEN length(excluded.description) > length(products.description) THEN excluded.description
+                    ELSE products.description
+                  END,
+                  price_cents=excluded.price_cents,
+                  original_price_cents=COALESCE(excluded.original_price_cents, products.original_price_cents),
+                  currency=excluded.currency,
+                  rating=CASE WHEN excluded.rating > products.rating THEN excluded.rating ELSE products.rating END,
+                  review_count=CASE WHEN excluded.review_count > products.review_count THEN excluded.review_count ELSE products.review_count END,
+                  source_category_id=COALESCE(excluded.source_category_id, products.source_category_id),
+                  source_category=COALESCE(excluded.source_category, products.source_category),
+                  canonical_category_id=excluded.canonical_category_id,
+                  canonical_category=excluded.canonical_category,
+                  category_confidence=excluded.category_confidence,
+                  category_scores_json=excluded.category_scores_json,
+                  matched_terms_json=excluded.matched_terms_json,
+                  category_id=excluded.category_id,
+                  category=excluded.category,
+                  category_source=excluded.category_source,
+                  ai_category_id=excluded.ai_category_id,
+                  ai_category_confidence=excluded.ai_category_confidence,
+                  ai_category_reason=excluded.ai_category_reason,
+                  ai_category_updated_at=excluded.ai_category_updated_at,
+                  brand=COALESCE(excluded.brand, products.brand),
+                  collection_code=COALESCE(excluded.collection_code, products.collection_code),
+                  source_image_url=excluded.source_image_url,
+                  image_gallery_json=excluded.image_gallery_json,
+                  family_key=COALESCE(excluded.family_key, products.family_key),
+                  variant_label=COALESCE(excluded.variant_label, products.variant_label),
+                  variant_attributes_json=CASE
+                    WHEN excluded.variant_attributes_json IS NOT NULL AND excluded.variant_attributes_json != '{}'
+                      THEN excluded.variant_attributes_json
+                    ELSE products.variant_attributes_json
+                  END,
+                  local_image_key=excluded.local_image_key,
+                  image_mime=excluded.image_mime,
+                  image_width=excluded.image_width,
+                  image_height=excluded.image_height,
+                  tags_json=excluded.tags_json,
+                  raw_json=excluded.raw_json,
+                  updated_at=excluded.updated_at,
+                  last_verified_at=excluded.last_verified_at,
+                  is_active=1
+                """,
+                row,
+            )
+        connection.commit()
+    if with_meta:
+        return {
+            "productIds": product_ids,
+            "aiCategoryJudgeUsed": ai_category_judge_used,
+            "aiCategoryApplied": ai_category_applied,
+        }
+    return product_ids
 
 
 def favorite_product_ids_for_user(user_id: str, product_ids: list[str], connection: sqlite3.Connection | None = None) -> set[str]:
@@ -1189,6 +1941,7 @@ def _load_featured_offer_rows_from_ids(
         """,
         deduped_ids,
     ).fetchall()
+    rows = _filter_rows_with_images(rows)
     row_by_id = {str(row["id"]): row for row in rows if row["id"]}
     ordered_rows: list[sqlite3.Row] = []
     for product_id in deduped_ids[:limit]:
@@ -1200,7 +1953,7 @@ def _load_featured_offer_rows_from_ids(
 
 
 def _generate_featured_offer_product_ids(connection: sqlite3.Connection, period_key: str, limit: int) -> list[str]:
-    candidates = _discounted_product_rows(connection)
+    candidates = _filter_rows_with_images(_discounted_product_rows(connection))
     scored: list[tuple[float, sqlite3.Row]] = []
     for row in candidates:
         discount_percentage = _discount_percentage_from_row(row)
@@ -1291,7 +2044,7 @@ def _build_offers(connection: sqlite3.Connection, limit: int = FEATURED_OFFERS_L
 
 
 def _interleaved_products(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
-    rows = _dedupe_rows(rows)
+    rows = _dedupe_rows(_filter_rows_with_images(rows))
     queues: dict[str, list[sqlite3.Row]] = {}
     for row in rows:
         queues.setdefault(str(row["category_id"]), []).append(row)
@@ -1356,120 +2109,12 @@ def upsert_products(
     *,
     with_meta: bool = False,
 ) -> list[str] | dict[str, Any]:
-    if not products:
-        return {"productIds": [], "aiCategoryJudgeUsed": False, "aiCategoryApplied": False} if with_meta else []
-    product_ids: list[str] = []
-    ai_category_judge_used = False
-    ai_category_applied = False
-    with _write_connection() as connection:
-        for product in products:
-            image_meta = image_meta_by_url.get(product.source_image_url) or _fallback_image_meta(product.source_image_url)
-            row = _product_to_row(product, image_meta)
-            if not row:
-                continue
-            existing_row = connection.execute(
-                "SELECT image_gallery_json, family_key, variant_label, variant_attributes_json FROM products WHERE canonical_source_url = ?",
-                (row["canonical_source_url"],),
-            ).fetchone()
-            if existing_row:
-                row["image_gallery_json"] = json_dumps(
-                    _merge_image_gallery_urls(
-                        row["source_image_url"],
-                        _decode_json_array(existing_row["image_gallery_json"]),
-                        _decode_json_array(row["image_gallery_json"]),
-                    )
-                )
-                if not row["family_key"]:
-                    row["family_key"] = normalize_whitespace(existing_row["family_key"]) or None
-                if not row["variant_label"]:
-                    row["variant_label"] = normalize_whitespace(existing_row["variant_label"]) or None
-                existing_variant_attributes = _decode_json_object(existing_row["variant_attributes_json"])
-                if existing_variant_attributes:
-                    merged_variant_attributes = {
-                        **existing_variant_attributes,
-                        **_decode_json_object(row["variant_attributes_json"]),
-                    }
-                    row["variant_attributes_json"] = json_dumps(merged_variant_attributes)
-            ai_category_judge_used = ai_category_judge_used or bool(row.get("_ai_category_judge_used"))
-            ai_category_applied = ai_category_applied or bool(row.get("_ai_category_applied"))
-            product_ids.append(row["id"])
-            connection.execute(
-                """
-                INSERT INTO products (
-                  id, provider, source_url, canonical_source_url, title, slug, description,
-                  price_cents, original_price_cents, currency, rating, review_count, source_category_id,
-                  source_category, canonical_category_id, canonical_category, category_confidence, category_scores_json,
-                  matched_terms_json, category_id, category, category_source, ai_category_id, ai_category_confidence,
-                  ai_category_reason, ai_category_updated_at, brand, source_image_url, image_gallery_json, family_key,
-                  variant_label, variant_attributes_json, local_image_key, image_mime, image_width,
-                  image_height, tags_json, raw_json, created_at, updated_at, last_verified_at, is_active
-                ) VALUES (
-                  :id, :provider, :source_url, :canonical_source_url, :title, :slug, :description,
-                  :price_cents, :original_price_cents, :currency, :rating, :review_count, :source_category_id,
-                  :source_category, :canonical_category_id, :canonical_category, :category_confidence, :category_scores_json,
-                  :matched_terms_json, :category_id, :category, :category_source, :ai_category_id, :ai_category_confidence,
-                  :ai_category_reason, :ai_category_updated_at, :brand, :source_image_url, :image_gallery_json, :family_key,
-                  :variant_label, :variant_attributes_json, :local_image_key, :image_mime, :image_width,
-                  :image_height, :tags_json, :raw_json, :created_at, :updated_at, :last_verified_at, :is_active
-                )
-                ON CONFLICT(canonical_source_url) DO UPDATE SET
-                  provider=excluded.provider,
-                  source_url=excluded.source_url,
-                  title=excluded.title,
-                  slug=excluded.slug,
-                  description=CASE
-                    WHEN length(excluded.description) > length(products.description) THEN excluded.description
-                    ELSE products.description
-                  END,
-                  price_cents=excluded.price_cents,
-                  original_price_cents=COALESCE(excluded.original_price_cents, products.original_price_cents),
-                  currency=excluded.currency,
-                  rating=CASE WHEN excluded.rating > products.rating THEN excluded.rating ELSE products.rating END,
-                  review_count=CASE WHEN excluded.review_count > products.review_count THEN excluded.review_count ELSE products.review_count END,
-                  source_category_id=COALESCE(excluded.source_category_id, products.source_category_id),
-                  source_category=COALESCE(excluded.source_category, products.source_category),
-                  canonical_category_id=excluded.canonical_category_id,
-                  canonical_category=excluded.canonical_category,
-                  category_confidence=excluded.category_confidence,
-                  category_scores_json=excluded.category_scores_json,
-                  matched_terms_json=excluded.matched_terms_json,
-                  category_id=excluded.category_id,
-                  category=excluded.category,
-                  category_source=excluded.category_source,
-                  ai_category_id=excluded.ai_category_id,
-                  ai_category_confidence=excluded.ai_category_confidence,
-                  ai_category_reason=excluded.ai_category_reason,
-                  ai_category_updated_at=excluded.ai_category_updated_at,
-                  brand=COALESCE(excluded.brand, products.brand),
-                  source_image_url=excluded.source_image_url,
-                  image_gallery_json=excluded.image_gallery_json,
-                  family_key=COALESCE(excluded.family_key, products.family_key),
-                  variant_label=COALESCE(excluded.variant_label, products.variant_label),
-                  variant_attributes_json=CASE
-                    WHEN excluded.variant_attributes_json IS NOT NULL AND excluded.variant_attributes_json != '{}'
-                      THEN excluded.variant_attributes_json
-                    ELSE products.variant_attributes_json
-                  END,
-                  local_image_key=excluded.local_image_key,
-                  image_mime=excluded.image_mime,
-                  image_width=excluded.image_width,
-                  image_height=excluded.image_height,
-                  tags_json=excluded.tags_json,
-                  raw_json=excluded.raw_json,
-                  updated_at=excluded.updated_at,
-                  last_verified_at=excluded.last_verified_at,
-                  is_active=1
-                """,
-                row,
-            )
-        connection.commit()
-    if with_meta:
-        return {
-            "productIds": product_ids,
-            "aiCategoryJudgeUsed": ai_category_judge_used,
-            "aiCategoryApplied": ai_category_applied,
-        }
-    return product_ids
+    prepared = prepare_product_candidates(products, image_meta_by_url)
+    return upsert_prepared_product_candidates(
+        prepared["candidates"],
+        purge_canonical_urls=prepared["purgeCanonicalUrls"],
+        with_meta=with_meta,
+    )
 
 
 def replace_reviews(product_id: str, reviews: list[ProviderReview]) -> None:
@@ -1494,6 +2139,137 @@ def replace_reviews(product_id: str, reviews: list[ProviderReview]) -> None:
         connection.commit()
 
 
+def _generate_collection_code(context_key: str, display_query: str, query_kind: str) -> str:
+    seed = f"{query_kind}:{context_key}:{display_query}:{now_iso()}:{secrets.token_hex(4)}"
+    return f"grp_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:20]}"
+
+
+def _resolve_collection_group_category_id(
+    connection: sqlite3.Connection,
+    product_ids: list[str],
+    fallback_category_id: str | None = None,
+) -> str:
+    if not product_ids:
+        return normalize_whitespace(fallback_category_id).lower() or "others"
+    placeholders = ",".join("?" for _ in product_ids)
+    rows = connection.execute(
+        f"SELECT category_id, COUNT(*) AS count FROM products WHERE id IN ({placeholders}) GROUP BY category_id",
+        product_ids,
+    ).fetchall()
+    if not rows:
+        return normalize_whitespace(fallback_category_id).lower() or "others"
+    ordered = sorted(
+        ((normalize_whitespace(row["category_id"]).lower() or "others", int(row["count"] or 0)) for row in rows),
+        key=lambda item: (item[1], item[0]),
+        reverse=True,
+    )
+    return ordered[0][0]
+
+
+def _assign_primary_collection_code(
+    connection: sqlite3.Connection,
+    *,
+    product_ids: list[str],
+    collection_code: str,
+    resolved_category_id: str,
+) -> None:
+    if not product_ids or not collection_code:
+        return
+    placeholders = ",".join("?" for _ in product_ids)
+    rows = connection.execute(
+        f"SELECT id, category_id FROM products WHERE id IN ({placeholders})",
+        product_ids,
+    ).fetchall()
+    current_time = now_iso()
+    for row in rows:
+        if normalize_whitespace(row["category_id"]).lower() != resolved_category_id:
+            continue
+        connection.execute(
+            "UPDATE products SET collection_code = ?, updated_at = ? WHERE id = ?",
+            (collection_code, current_time, row["id"]),
+        )
+
+
+def _store_collection_group_page(
+    connection: sqlite3.Connection,
+    *,
+    context_key: str,
+    display_query: str,
+    query_kind: str,
+    requested_category_id: str | None,
+    active_collection_code: str,
+    page_number: int,
+    provider: str,
+    product_ids: list[str],
+) -> str:
+    resolved_category_id = _resolve_collection_group_category_id(connection, product_ids, requested_category_id)
+    current_time = now_iso()
+    connection.execute(
+        """
+        INSERT INTO collection_groups (
+          code, context_key, display_query, query_kind, requested_category_id, resolved_category_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+          context_key=excluded.context_key,
+          display_query=excluded.display_query,
+          query_kind=excluded.query_kind,
+          requested_category_id=excluded.requested_category_id,
+          resolved_category_id=excluded.resolved_category_id,
+          updated_at=excluded.updated_at
+        """,
+        (
+            active_collection_code,
+            context_key,
+            display_query,
+            query_kind,
+            requested_category_id,
+            resolved_category_id,
+            current_time,
+            current_time,
+        ),
+    )
+    for rank, product_id in enumerate(product_ids, start=1):
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO collection_group_products (
+              group_code, product_id, rank, page_number, provider, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (active_collection_code, product_id, rank, page_number, provider, current_time),
+        )
+    _assign_primary_collection_code(
+        connection,
+        product_ids=product_ids,
+        collection_code=active_collection_code,
+        resolved_category_id=resolved_category_id,
+    )
+    return resolved_category_id
+
+
+def _next_append_positions(
+    connection: sqlite3.Connection,
+    normalized_query: str,
+    page_size: int,
+    product_ids: list[str],
+) -> list[tuple[str, int, int]]:
+    existing_rows = connection.execute(
+        "SELECT product_id FROM query_products WHERE normalized_query = ? ORDER BY page_number ASC, rank ASC",
+        (normalized_query,),
+    ).fetchall()
+    seen_ids = {str(row["product_id"]) for row in existing_rows}
+    position = len(existing_rows)
+    placements: list[tuple[str, int, int]] = []
+    for product_id in product_ids:
+        if product_id in seen_ids:
+            continue
+        seen_ids.add(product_id)
+        page_number = (position // page_size) + 1
+        rank = (position % page_size) + 1
+        placements.append((product_id, page_number, rank))
+        position += 1
+    return placements
+
+
 def save_query_results(
     normalized_query: str,
     display_query: str,
@@ -1504,14 +2280,20 @@ def save_query_results(
     query_kind: str = "search",
     category_id: str | None = None,
     query_variants: list[str] | None = None,
+    active_collection_code: str | None = None,
 ) -> None:
     discovered_at = now_iso()
     with _write_connection() as connection:
+        resolved_collection_code = normalize_whitespace(active_collection_code) or _generate_collection_code(
+            normalized_query,
+            display_query,
+            query_kind,
+        )
         connection.execute(
             """
             INSERT INTO queries (
-              normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at, last_completed_at, last_error, next_page_token_json, query_variants_json
-            ) VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, NULL, ?, ?)
+              normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at, last_completed_at, last_error, next_page_token_json, query_variants_json, active_collection_code
+            ) VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, NULL, ?, ?, ?)
             ON CONFLICT(normalized_query) DO UPDATE SET
               display_query=excluded.display_query,
               query_kind=excluded.query_kind,
@@ -1520,7 +2302,8 @@ def save_query_results(
               last_completed_at=excluded.last_completed_at,
               last_error=NULL,
               next_page_token_json=excluded.next_page_token_json,
-              query_variants_json=excluded.query_variants_json
+              query_variants_json=excluded.query_variants_json,
+              active_collection_code=excluded.active_collection_code
             """,
             (
                 normalized_query,
@@ -1532,6 +2315,7 @@ def save_query_results(
                 discovered_at,
                 next_page_token_json,
                 json_dumps(query_variants or []),
+                resolved_collection_code,
             ),
         )
         connection.execute(
@@ -1545,7 +2329,19 @@ def save_query_results(
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (normalized_query, product_id, rank, page_number, provider, discovered_at),
-        )
+            )
+        if product_ids:
+            _store_collection_group_page(
+                connection,
+                context_key=normalized_query,
+                display_query=display_query,
+                query_kind=query_kind,
+                requested_category_id=category_id,
+                active_collection_code=resolved_collection_code,
+                page_number=page_number,
+                provider=provider,
+                product_ids=product_ids,
+            )
         connection.commit()
 
 
@@ -1559,16 +2355,26 @@ def append_query_results(
     query_kind: str = "search",
     category_id: str | None = None,
     query_variants: list[str] | None = None,
+    active_collection_code: str | None = None,
 ) -> None:
     if not product_ids:
         return
     discovered_at = now_iso()
     with _write_connection() as connection:
+        existing_metadata = connection.execute(
+            "SELECT active_collection_code FROM queries WHERE normalized_query = ?",
+            (normalized_query,),
+        ).fetchone()
+        resolved_collection_code = (
+            normalize_whitespace(active_collection_code)
+            or (normalize_whitespace(existing_metadata["active_collection_code"]) if existing_metadata else "")
+            or _generate_collection_code(normalized_query, display_query, query_kind)
+        )
         connection.execute(
             """
             INSERT INTO queries (
-              normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at, last_completed_at, last_error, next_page_token_json, query_variants_json
-            ) VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, NULL, ?, ?)
+              normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at, last_completed_at, last_error, next_page_token_json, query_variants_json, active_collection_code
+            ) VALUES (?, ?, ?, ?, 'idle', ?, ?, ?, NULL, ?, ?, ?)
             ON CONFLICT(normalized_query) DO UPDATE SET
               display_query=excluded.display_query,
               query_kind=excluded.query_kind,
@@ -1578,7 +2384,8 @@ def append_query_results(
               last_completed_at=excluded.last_completed_at,
               last_error=NULL,
               next_page_token_json=excluded.next_page_token_json,
-              query_variants_json=excluded.query_variants_json
+              query_variants_json=excluded.query_variants_json,
+              active_collection_code=COALESCE(queries.active_collection_code, excluded.active_collection_code)
             """,
             (
                 normalized_query,
@@ -1590,20 +2397,11 @@ def append_query_results(
                 discovered_at,
                 next_page_token_json,
                 json_dumps(query_variants or []),
+                resolved_collection_code,
             ),
         )
-        existing_rows = connection.execute(
-            "SELECT product_id FROM query_products WHERE normalized_query = ? ORDER BY page_number ASC, rank ASC",
-            (normalized_query,),
-        ).fetchall()
-        seen_ids = {str(row["product_id"]) for row in existing_rows}
-        position = len(existing_rows)
-        for product_id in product_ids:
-            if product_id in seen_ids:
-                continue
-            seen_ids.add(product_id)
-            page_number = (position // page_size) + 1
-            rank = (position % page_size) + 1
+        placements = _next_append_positions(connection, normalized_query, page_size, product_ids)
+        for product_id, page_number, rank in placements:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO query_products (normalized_query, product_id, rank, page_number, provider, discovered_at)
@@ -1611,7 +2409,21 @@ def append_query_results(
                 """,
                 (normalized_query, product_id, rank, page_number, provider, discovered_at),
             )
-            position += 1
+        grouped_ids_by_page: dict[int, list[str]] = {}
+        for product_id, page_number, _ in placements:
+            grouped_ids_by_page.setdefault(page_number, []).append(product_id)
+        for current_page_number, page_product_ids in grouped_ids_by_page.items():
+            _store_collection_group_page(
+                connection,
+                context_key=normalized_query,
+                display_query=display_query,
+                query_kind=query_kind,
+                requested_category_id=category_id,
+                active_collection_code=resolved_collection_code,
+                page_number=current_page_number,
+                provider=provider,
+                product_ids=page_product_ids,
+            )
         connection.commit()
 
 
@@ -1631,14 +2443,24 @@ def set_query_status(
     category_id: str | None = None,
     query_variants: list[str] | None = None,
     next_page_token_json: str | None = None,
+    active_collection_code: str | None = None,
 ) -> None:
     current_time = now_iso()
     with _write_connection() as connection:
+        existing_metadata = connection.execute(
+            "SELECT active_collection_code FROM queries WHERE normalized_query = ?",
+            (normalized_query,),
+        ).fetchone()
+        resolved_collection_code = (
+            normalize_whitespace(active_collection_code)
+            or (normalize_whitespace(existing_metadata["active_collection_code"]) if existing_metadata else "")
+            or None
+        )
         connection.execute(
             """
             INSERT INTO queries (
-              normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at, last_completed_at, last_error, next_page_token_json, query_variants_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              normalized_query, display_query, query_kind, category_id, status, last_requested_at, last_started_at, last_completed_at, last_error, next_page_token_json, query_variants_json, active_collection_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(normalized_query) DO UPDATE SET
               display_query=excluded.display_query,
               query_kind=excluded.query_kind,
@@ -1649,7 +2471,8 @@ def set_query_status(
               last_completed_at=CASE WHEN excluded.status!='running' THEN excluded.last_completed_at ELSE queries.last_completed_at END,
               last_error=excluded.last_error,
               next_page_token_json=COALESCE(excluded.next_page_token_json, queries.next_page_token_json),
-              query_variants_json=excluded.query_variants_json
+              query_variants_json=excluded.query_variants_json,
+              active_collection_code=COALESCE(excluded.active_collection_code, queries.active_collection_code)
             """,
             (
                 normalized_query,
@@ -1663,6 +2486,7 @@ def set_query_status(
                 error_message,
                 next_page_token_json,
                 json_dumps(query_variants or []),
+                resolved_collection_code,
             ),
         )
         connection.commit()
@@ -1945,6 +2769,7 @@ def list_products(page: int, page_size: int, category_id: str | None = None, use
                 "SELECT * FROM products WHERE is_active = 1 AND category_id = ? ORDER BY updated_at DESC",
                 (category_id,),
             ).fetchall()
+            rows = _filter_rows_with_images(rows)
             deduped_rows = _dedupe_rows(rows)
             ordered = [_row_to_product(row) for row in deduped_rows]
         else:
@@ -1992,6 +2817,7 @@ def list_query_products(
             """,
             params,
         ).fetchall()
+        rows = _filter_rows_with_images(rows)
         total = len(rows)
         items = annotate_products_with_favorites(
             [_row_to_product(row) for row in rows[offset : offset + page_size]],
@@ -2024,13 +2850,33 @@ def list_query_products(
         return payload
 
 
-def _build_search_haystack_parts(row: sqlite3.Row) -> list[str]:
+def _search_record_tags(record: sqlite3.Row | dict[str, Any]) -> list[str]:
+    if isinstance(record, dict):
+        raw_tags = record.get("tags")
+        if isinstance(raw_tags, list):
+            return [normalize_whitespace(str(tag)).lower() for tag in raw_tags if normalize_whitespace(str(tag))]
+        raw_tags_json = record.get("tags_json")
+        if isinstance(raw_tags_json, list):
+            return [normalize_whitespace(str(tag)).lower() for tag in raw_tags_json if normalize_whitespace(str(tag))]
+        return [
+            normalize_whitespace(str(tag)).lower()
+            for tag in _decode_json_array(str(raw_tags_json or "[]"))
+            if normalize_whitespace(str(tag))
+        ]
     return [
-        normalize_whitespace(row["title"]).lower(),
-        normalize_whitespace(row["description"]).lower(),
-        normalize_whitespace(row["brand"]).lower(),
-        " ".join(_decode_json_array(row["tags_json"])).lower(),
-        normalize_whitespace(row["category"]).lower(),
+        normalize_whitespace(str(tag)).lower()
+        for tag in _decode_json_array(record["tags_json"])
+        if normalize_whitespace(str(tag))
+    ]
+
+
+def _build_search_haystack_parts(row: sqlite3.Row | dict[str, Any]) -> list[str]:
+    return [
+        normalize_whitespace(_record_value(row, "title", "name")).lower(),
+        normalize_whitespace(_record_value(row, "description")).lower(),
+        normalize_whitespace(_record_value(row, "brand")).lower(),
+        " ".join(_search_record_tags(row)).lower(),
+        normalize_whitespace(_record_value(row, "category", "categoryId", "category_id")).lower(),
     ]
 
 
@@ -2368,13 +3214,14 @@ def _search_products_by_keyword_for_related(
     *,
     limit: int,
     exclude_id: str,
+    category_id: str | None,
     user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     payload = search_cached_products(
         keyword,
         page=1,
         page_size=limit,
-        category_id=None,
+        category_id=category_id,
         user_id=user_id,
     )
     candidates: list[dict[str, Any]] = []
@@ -2394,6 +3241,7 @@ def _fulltext_search_related_rows(
     query_text: str,
     *,
     exclude_id: str,
+    category_id: str | None,
     limit: int,
 ) -> list[tuple[sqlite3.Row | dict[str, Any], float]]:
     normalized_query = normalize_whitespace(query_text).lower()
@@ -2411,13 +3259,15 @@ def _fulltext_search_related_rows(
             FROM products
             WHERE is_active = 1
               AND id != ?
+              AND (? IS NULL OR category_id = ?)
               AND to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(description, ''))
                   @@ plainto_tsquery('english', ?)
             ORDER BY text_rank DESC, updated_at DESC
             LIMIT ?
             """,
-            (normalized_query, exclude_id, normalized_query, limit),
+            (normalized_query, exclude_id, category_id, category_id, normalized_query, limit),
         ).fetchall()
+        rows = _filter_rows_with_images(rows)
         return [(row, float(_record_value(row, "text_rank") or 0.0)) for row in rows]
 
     query_tokens = _build_search_token_set(normalized_query)
@@ -2427,11 +3277,13 @@ def _fulltext_search_related_rows(
         FROM products
         WHERE is_active = 1
           AND id != ?
+          AND (? IS NULL OR category_id = ?)
         ORDER BY updated_at DESC
         LIMIT ?
         """,
-        (exclude_id, max(limit * 10, 240)),
+        (exclude_id, category_id, category_id, max(limit * 10, 240)),
     ).fetchall()
+    rows = _filter_rows_with_images(rows)
     scored_rows: list[tuple[sqlite3.Row, float]] = []
     for row in rows:
         haystack_parts = _build_search_haystack_parts(row)
@@ -2519,19 +3371,23 @@ def _compute_related_scores(
     user_id: str | None = None,
     session_id: str | None = None,
     offset: int = 0,
+    excluded_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     del session_id
     product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-    if not product_row:
+    if not product_row or not _row_has_any_image(product_row):
         return [], 0
 
     anchor_product = _row_to_product(product_row)
     keywords = extract_product_keywords(anchor_product)
     if not keywords:
         return [], 0
+    anchor_category_id = str(anchor_product.get("categoryId") or "") or None
 
     fetch_limit = max(limit + offset + 12, 24)
     candidate_index: dict[str, dict[str, Any]] = {}
+    blocked_ids = {str(product_id)}
+    blocked_ids.update(str(candidate_id) for candidate_id in (excluded_ids or set()) if candidate_id)
 
     def register_candidate(
         candidate: dict[str, Any],
@@ -2542,7 +3398,7 @@ def _compute_related_scores(
         fulltext_rank: float | None = None,
     ) -> None:
         candidate_id = str(candidate.get("id") or "")
-        if not candidate_id or candidate_id == product_id:
+        if not candidate_id or candidate_id in blocked_ids:
             return
         meta = candidate_index.setdefault(
             candidate_id,
@@ -2571,6 +3427,7 @@ def _compute_related_scores(
             keyword,
             limit=fetch_limit,
             exclude_id=product_id,
+            category_id=anchor_category_id,
             user_id=user_id,
         ):
             register_candidate(
@@ -2585,6 +3442,7 @@ def _compute_related_scores(
         connection,
         fulltext_query,
         exclude_id=product_id,
+        category_id=anchor_category_id,
         limit=fetch_limit,
     ):
         register_candidate(_row_to_product(row), fulltext_rank=rank)
@@ -2654,6 +3512,64 @@ def find_related_products_hybrid(
             "total": total,
             "keywords": extract_product_keywords(anchor_product or {}) if anchor_product else [],
         }
+
+
+def _collection_group_related_candidates(
+    connection: sqlite3.Connection,
+    product_row: sqlite3.Row,
+) -> tuple[list[dict[str, Any]], int]:
+    collection_code = normalize_whitespace(product_row["collection_code"])
+    category_id = normalize_whitespace(product_row["category_id"]).lower()
+    if not collection_code or not category_id:
+        return [], 0
+    rows = connection.execute(
+        """
+        SELECT p.*, cgp.rank AS collection_rank, cgp.page_number AS collection_page, cgp.provider AS collection_provider
+        FROM collection_group_products cgp
+        INNER JOIN products p ON p.id = cgp.product_id
+        WHERE cgp.group_code = ?
+          AND p.is_active = 1
+          AND p.category_id = ?
+          AND p.id != ?
+        ORDER BY cgp.page_number ASC, cgp.rank ASC
+        """,
+        (collection_code, category_id, product_row["id"]),
+    ).fetchall()
+    rows = _filter_rows_with_images(rows)
+    anchor_provider = normalize_whitespace(product_row["provider"]).lower()
+    anchor_family_key = normalize_whitespace(product_row["family_key"])
+    anchor_brand = normalize_whitespace(product_row["brand"]).lower()
+    anchor_price = float(from_cents(product_row["price_cents"]) or 0.0)
+
+    def sort_key(row: sqlite3.Row) -> tuple[int, int, int, float, int, int, float]:
+        candidate_provider = normalize_whitespace(row["provider"]).lower()
+        candidate_family_key = normalize_whitespace(row["family_key"])
+        candidate_brand = normalize_whitespace(row["brand"]).lower()
+        candidate_price = float(from_cents(row["price_cents"]) or 0.0)
+        same_family = int(
+            bool(
+                anchor_provider
+                and anchor_family_key
+                and candidate_provider == anchor_provider
+                and candidate_family_key
+                and candidate_family_key == anchor_family_key
+            )
+        )
+        same_provider = int(bool(candidate_provider and candidate_provider == anchor_provider))
+        same_brand = int(bool(candidate_brand and candidate_brand == anchor_brand))
+        price_delta = abs(candidate_price - anchor_price)
+        return (
+            same_family,
+            same_provider,
+            same_brand,
+            -price_delta,
+            -int(row["collection_page"] or 0),
+            -int(row["collection_rank"] or 0),
+            float(row["rating"] or 0.0),
+        )
+
+    rows.sort(key=sort_key, reverse=True)
+    return [_row_to_product(row) for row in rows], len(rows)
 
 
 def _shared_query_count_lookup(
@@ -2743,6 +3659,7 @@ def search_cached_products(
             LIMIT 500
             """
         ).fetchall()
+        rows = _filter_rows_with_images(rows)
         scored: list[tuple[float, sqlite3.Row]] = []
         exact_match_count = 0
         for row in rows:
@@ -2944,7 +3861,7 @@ def rank_product_ids_for_query(
 def get_product(product_id: str, user_id: str | None = None) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-        product = _row_to_product(row) if row else None
+        product = _row_to_product(row) if row and _row_has_any_image(row) else None
         if product:
             annotate_products_with_favorites([product], user_id, connection=connection)
         return product
@@ -2966,13 +3883,42 @@ def get_related_products(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any] | None:
-    return find_related_products_hybrid(
-        product_id,
-        page=page,
-        page_size=page_size,
-        user_id=user_id,
-        session_id=session_id,
-    )
+    del session_id
+    offset = max(page - 1, 0) * page_size
+    with get_connection() as connection:
+        product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+        if not product_row or not _row_has_any_image(product_row):
+            return None
+        anchor_product = _row_to_product(product_row)
+        group_items, group_match_count = _collection_group_related_candidates(connection, product_row)
+        excluded_ids = {str(product_id)}
+        excluded_ids.update(str(item.get("id")) for item in group_items if item.get("id"))
+        fallback_limit = max(count_products(anchor_product.get("categoryId")), page * page_size + 24)
+        fallback_items, _ = _compute_related_scores(
+            connection,
+            product_id,
+            limit=max(fallback_limit, page_size),
+            user_id=user_id,
+            offset=0,
+            excluded_ids=excluded_ids,
+        )
+        combined_items = _dedupe_product_list(group_items + fallback_items)
+        total = len(combined_items)
+        if total <= 0:
+            return None
+        items = combined_items[offset : offset + page_size]
+        annotate_products_with_favorites(items, user_id, connection=connection)
+        return {
+            "items": items,
+            "page": page,
+            "pageSize": page_size,
+            "hasMore": page * page_size < total,
+            "total": total,
+            "keywords": extract_product_keywords(anchor_product),
+            "groupCode": anchor_product.get("collectionCode"),
+            "groupMatchCount": group_match_count,
+            "fallbackUsed": len(combined_items) > group_match_count,
+        }
 
 
 def _variant_summary_from_row(row: sqlite3.Row, current_product_id: str) -> dict[str, Any]:
@@ -2997,7 +3943,7 @@ def get_product_with_reviews(
 ) -> dict[str, Any] | None:
     with get_connection() as connection:
         product_row = connection.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-        if not product_row:
+        if not product_row or not _row_has_any_image(product_row):
             return None
         product = _row_to_product(product_row)
         review_rows = connection.execute(
@@ -3030,6 +3976,7 @@ def get_product_with_reviews(
                 """,
                 (product_row["provider"], family_key),
             ).fetchall()
+            variant_rows = _filter_rows_with_images(variant_rows)
         annotate_products_with_favorites([product], user_id, connection=connection)
         annotate_products_with_favorites(related_products, user_id, connection=connection)
         product["reviews"] = reviews
@@ -3930,10 +4877,10 @@ def get_user_favorite(user_id: str, product_id: str) -> dict[str, Any] | None:
         ).fetchone()
     if not row:
         return None
-    if row["id"]:
+    if row["id"] and _row_has_any_image(row):
         product = _row_to_product(row)
     else:
-        product = _restore_snapshot(row["favorite_product_snapshot_json"]) or {}
+        product = {}
     if not product:
         return None
     product["isFavorite"] = True
@@ -3964,10 +4911,10 @@ def list_user_favorites(user_id: str, page: int, page_size: int) -> dict[str, An
         ).fetchall()
     items: list[dict[str, Any]] = []
     for row in rows:
-        if row["id"]:
+        if row["id"] and _row_has_any_image(row):
             product = _row_to_product(row)
         else:
-            product = _restore_snapshot(row["favorite_product_snapshot_json"]) or {}
+            product = {}
         if not product:
             continue
         product["isFavorite"] = True
@@ -4005,6 +4952,7 @@ def refresh_user_recommendations(user_id: str, limit: int = 120, session_id: str
         rows = connection.execute(
             "SELECT * FROM products WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 400"
         ).fetchall()
+        rows = _filter_rows_with_images(rows)
         scored: list[tuple[float, str, sqlite3.Row]] = []
         for row in rows:
             row_category_id = normalize_whitespace(row["category_id"]).lower()
@@ -4101,6 +5049,7 @@ def list_user_recommendations(user_id: str, page: int, page_size: int, session_i
             """,
             (user_id,),
         ).fetchall()
+        rows = _filter_rows_with_images(rows)
         deduped_rows = _dedupe_rows(rows)
         preference_context = _build_event_affinities(connection, user_id, session_id=session_id)
         favorite_context = _build_favorite_affinities(connection, user_id)
@@ -4178,6 +5127,15 @@ def list_user_history(user_id: str, page: int, page_size: int, session_id: str |
             for row in rows[offset : offset + page_size]:
                 event_type = str(row["event_type"])
                 product_snapshot = _restore_snapshot(row["product_snapshot_json"])
+                if (
+                    event_type == "product_view"
+                    and not normalize_whitespace(row["product_title"])
+                    and (
+                        product_snapshot
+                        or normalize_whitespace(row["canonical_source_url"])
+                    )
+                ):
+                    continue
                 title = (
                     row["product_title"]
                     or (product_snapshot or {}).get("name")

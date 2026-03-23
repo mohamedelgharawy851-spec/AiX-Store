@@ -21,6 +21,58 @@ class DatabaseTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def _make_product(
+        self,
+        *,
+        url_suffix: str,
+        title: str,
+        description: str,
+        category_id: str,
+        provider: str = "Target",
+        brand: str = "Demo",
+        price: float = 29.99,
+        rating: float = 4.5,
+        review_count: int = 20,
+        tags: list[str] | None = None,
+        family_key: str | None = None,
+    ) -> ProviderProduct:
+        return ProviderProduct(
+            provider=provider,
+            source_url=f"https://www.example.com/{provider.lower()}/{url_suffix}",
+            canonical_source_url=f"https://www.example.com/{provider.lower()}/{url_suffix}",
+            title=title,
+            description=description,
+            price=price,
+            currency="USD",
+            category_id=category_id,
+            category=category_id.title(),
+            brand=brand,
+            source_image_url=f"https://images.example.com/{url_suffix}.jpg",
+            rating=rating,
+            review_count=review_count,
+            tags=tags or [],
+            family_key=family_key,
+        )
+
+    def _image_meta(self, products: list[ProviderProduct]) -> dict[str, dict[str, object]]:
+        return {
+            product.source_image_url: {
+                "local_image_key": f"img-{index}",
+                "image_mime": "image/jpeg",
+                "image_width": 640,
+                "image_height": 640,
+            }
+            for index, product in enumerate(products, start=1)
+            if product.source_image_url
+        }
+
+    def _prepare_candidates(self, products: list[ProviderProduct]) -> list[dict[str, object]]:
+        prepared = db_module.prepare_product_candidates(products, self._image_meta(products))
+        return prepared["candidates"]
+
+    def _upsert(self, products: list[ProviderProduct]) -> list[str]:
+        return db_module.upsert_products(products, self._image_meta(products))
+
     def test_upsert_and_list_products(self):
         product = ProviderProduct(
             provider="Walmart",
@@ -84,6 +136,120 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["localImageKey"], expected_key)
         self.assertEqual(payload["items"][0]["imageUrl"], f"/images/{expected_key}")
 
+    def test_upsert_skips_products_without_any_image(self):
+        product = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-imageless/-/A-1004",
+            canonical_source_url="https://www.target.com/p/demo-imageless/-/A-1004",
+            title="Imageless Product",
+            description="This product should never be stored",
+            price=19.99,
+            currency="USD",
+            category_id="others",
+            category="Others",
+            brand="Demo",
+            source_image_url="",
+            image_gallery_urls=[],
+            rating=4.1,
+            review_count=2,
+            tags=["imageless"],
+        )
+
+        product_ids = db_module.upsert_products([product], {})
+
+        self.assertEqual(product_ids, [])
+        payload = db_module.list_products(page=1, page_size=20)
+        self.assertEqual(payload["total"], 0)
+
+    def test_initialize_database_purges_existing_products_without_images(self):
+        primary = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-imageless-cleanup/-/A-1005",
+            canonical_source_url="https://www.target.com/p/demo-imageless-cleanup/-/A-1005",
+            title="Imageless Cleanup Product",
+            description="Stored first, then stripped of images",
+            price=29.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-imageless-cleanup.jpg",
+            rating=4.2,
+            review_count=4,
+            tags=["cleanup"],
+        )
+        related = ProviderProduct(
+            provider="Target",
+            source_url="https://www.target.com/p/demo-cleanup-related/-/A-1006",
+            canonical_source_url="https://www.target.com/p/demo-cleanup-related/-/A-1006",
+            title="Cleanup Related Product",
+            description="Valid product kept after purge",
+            price=31.99,
+            currency="USD",
+            category_id="home",
+            category="Home",
+            brand="Demo",
+            source_image_url="https://images.example.com/demo-cleanup-related.jpg",
+            rating=4.5,
+            review_count=7,
+            tags=["cleanup", "related"],
+        )
+        product_ids = db_module.upsert_products(
+            [primary, related],
+            {
+                primary.source_image_url: {
+                    "local_image_key": "img-demo-imageless-cleanup",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+                related.source_image_url: {
+                    "local_image_key": "img-demo-cleanup-related",
+                    "image_mime": "image/jpeg",
+                    "image_width": 640,
+                    "image_height": 640,
+                },
+            },
+        )
+        auth = db_module.create_user("imageless@example.com", "secret123")
+        user = db_module.get_user_by_token(auth["token"])
+        assert user is not None
+        db_module.add_user_favorite(user["id"], product_ids[0])
+        db_module.record_user_event(user["id"], "product_view", product_id=product_ids[0])
+        db_module.save_query_results(
+            "search::all::cleanup",
+            "cleanup",
+            1,
+            "cache",
+            [product_ids[0]],
+            query_kind="search",
+            query_variants=["cleanup"],
+        )
+        with db_module.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO related_products (product_id, related_product_id, score, reason)
+                VALUES (?, ?, ?, ?)
+                """,
+                (product_ids[0], product_ids[1], 7.5, "cleanup"),
+            )
+            connection.execute(
+                "UPDATE products SET source_image_url = '', image_gallery_json = '[]' WHERE id = ?",
+                (product_ids[0],),
+            )
+            connection.commit()
+
+        db_module.initialize_database()
+
+        self.assertIsNone(db_module.get_product(product_ids[0]))
+        self.assertIsNotNone(db_module.get_product(product_ids[1]))
+        with db_module.get_connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM products WHERE id = ?", (product_ids[0],)).fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM query_products WHERE product_id = ?", (product_ids[0],)).fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM related_products WHERE product_id = ? OR related_product_id = ?", (product_ids[0], product_ids[0])).fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM user_favorites WHERE product_id = ?", (product_ids[0],)).fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM user_events WHERE product_id = ?", (product_ids[0],)).fetchone()[0], 0)
+
     def test_extract_product_keywords_keeps_core_title_phrases(self):
         keywords = db_module.extract_product_keywords(
             {
@@ -98,7 +264,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(any("rubik" in keyword and "cube" in keyword for keyword in keywords))
         self.assertLessEqual(len(keywords), 8)
 
-    def test_find_related_products_hybrid_surfaces_cross_category_matches(self):
+    def test_find_related_products_hybrid_limits_results_to_same_category(self):
         anchor = ProviderProduct(
             provider="Target",
             source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
@@ -115,23 +281,23 @@ class DatabaseTests(unittest.TestCase):
             review_count=120,
             tags=["rubik", "cube", "puzzle", "brain teaser"],
         )
-        cross_category_match = ProviderProduct(
+        same_category_match = ProviderProduct(
             provider="Walmart",
             source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
             canonical_source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
-            title="Rubik's 3x3 Speed Cube",
-            description="Magnetic Rubik speed cube for fast solving",
+            title="Rubik's Puzzle Cube Toy",
+            description="Classic Rubik cube puzzle toy for brain teaser fun",
             price=14.99,
             currency="USD",
-            category_id="others",
-            category="Others",
+            category_id="toys",
+            category="Toys",
             brand="Rubik's",
             source_image_url="https://images.example.com/rubiks-speed-cube.jpg",
             rating=4.6,
             review_count=58,
             tags=["rubik", "cube", "speed cube", "puzzle"],
         )
-        unrelated_same_category = ProviderProduct(
+        cross_category_match = ProviderProduct(
             provider="Target",
             source_url="https://www.target.com/p/lego-batmobile/-/A-7303",
             canonical_source_url="https://www.target.com/p/lego-batmobile/-/A-7303",
@@ -139,8 +305,8 @@ class DatabaseTests(unittest.TestCase):
             description="Creative building toy for Batman fans",
             price=29.99,
             currency="USD",
-            category_id="toys",
-            category="Toys",
+            category_id="others",
+            category="Others",
             brand="LEGO",
             source_image_url="https://images.example.com/lego-batmobile.jpg",
             rating=4.8,
@@ -148,7 +314,7 @@ class DatabaseTests(unittest.TestCase):
             tags=["lego", "building toy", "batman"],
         )
         product_ids = db_module.upsert_products(
-            [anchor, cross_category_match, unrelated_same_category],
+            [anchor, same_category_match, cross_category_match],
             {
                 anchor.source_image_url: {
                     "local_image_key": "img-rubiks-cube-classic",
@@ -156,13 +322,13 @@ class DatabaseTests(unittest.TestCase):
                     "image_width": 640,
                     "image_height": 640,
                 },
-                cross_category_match.source_image_url: {
+                same_category_match.source_image_url: {
                     "local_image_key": "img-rubiks-speed-cube",
                     "image_mime": "image/jpeg",
                     "image_width": 640,
                     "image_height": 640,
                 },
-                unrelated_same_category.source_image_url: {
+                cross_category_match.source_image_url: {
                     "local_image_key": "img-lego-batmobile",
                     "image_mime": "image/jpeg",
                     "image_width": 640,
@@ -177,7 +343,357 @@ class DatabaseTests(unittest.TestCase):
         assert payload is not None
         self.assertEqual(payload["items"][0]["id"], product_ids[1])
         self.assertIn(product_ids[1], [item["id"] for item in payload["items"]])
+        self.assertNotIn(product_ids[2], [item["id"] for item in payload["items"]])
         self.assertTrue(any("rubik" in keyword and "cube" in keyword for keyword in payload["keywords"]))
+
+    def test_batch_requested_category_forces_all_ranked_candidates_into_same_category(self):
+        products = [
+            self._make_product(
+                url_suffix="rubiks-original",
+                title="Rubik's Cube Original 3x3 Puzzle",
+                description="Classic cube puzzle toy",
+                category_id="toys",
+                tags=["rubik", "cube", "puzzle"],
+                family_key="rubik-family",
+            ),
+            self._make_product(
+                url_suffix="rubiks-speed",
+                title="Rubik's Speed Cube Puzzle",
+                description="Speed cube product scraped as others",
+                category_id="others",
+                tags=["rubik", "cube", "speed cube"],
+                family_key="rubik-family",
+            ),
+        ]
+
+        candidates = self._prepare_candidates(products)
+        ranked_candidates, exact_count, filtered_count = db_module.rank_product_candidates_for_query(
+            candidates,
+            "rubik cube",
+            category_id="toys",
+            strict_category=True,
+        )
+        resolved_category_id = db_module.resolve_batch_category(ranked_candidates, "toys")
+        normalized_candidates = db_module.apply_batch_category_to_candidates(
+            ranked_candidates,
+            resolved_category_id=resolved_category_id,
+            requested_category_id="toys",
+        )
+        persisted = db_module.upsert_prepared_product_candidates(
+            normalized_candidates,
+            requested_category_id="toys",
+            with_meta=True,
+        )
+
+        self.assertEqual(exact_count, 2)
+        self.assertEqual(filtered_count, 0)
+        self.assertEqual(resolved_category_id, "toys")
+        self.assertEqual(len(persisted["productIds"]), 2)
+        stored = [db_module.get_product(product_id) for product_id in persisted["productIds"]]
+        self.assertTrue(all(product is not None and product["categoryId"] == "toys" for product in stored))
+
+    def test_batch_resolution_uses_dominant_non_other_category_without_request(self):
+        products = [
+            self._make_product(
+                url_suffix="rubiks-classic-a",
+                title="Rubik's Cube Puzzle Toy Classic",
+                description="Classic cube brain teaser toy",
+                category_id="toys",
+                tags=["rubik", "cube", "puzzle", "toy"],
+            ),
+            self._make_product(
+                url_suffix="rubiks-classic-b",
+                title="Rubik's Cube Puzzle Toy Gift Set",
+                description="Gift set with cube puzzle toy",
+                category_id="toys",
+                tags=["rubik", "cube", "gift", "toy"],
+            ),
+            self._make_product(
+                url_suffix="rubiks-generic-c",
+                title="Rubik's Cube Accessory Bundle",
+                description="Bundle scraped into others",
+                category_id="others",
+                tags=["rubik", "cube"],
+            ),
+        ]
+
+        candidates = self._prepare_candidates(products)
+        ranked_candidates, _, _ = db_module.rank_product_candidates_for_query(candidates, "rubik cube")
+        resolved_category_id = db_module.resolve_batch_category(ranked_candidates, None)
+        normalized_candidates = db_module.apply_batch_category_to_candidates(
+            ranked_candidates,
+            resolved_category_id=resolved_category_id,
+        )
+        persisted = db_module.upsert_prepared_product_candidates(normalized_candidates, with_meta=True)
+
+        self.assertEqual(resolved_category_id, "toys")
+        stored = [db_module.get_product(product_id) for product_id in persisted["productIds"]]
+        self.assertTrue(all(product is not None and product["categoryId"] == "toys" for product in stored))
+
+    def test_batch_resolution_keeps_all_other_batches_in_others(self):
+        products = [
+            self._make_product(
+                url_suffix="utility-basket-a",
+                title="Utility Storage Basket",
+                description="Generic organizer basket",
+                category_id="others",
+                tags=["basket", "storage", "organizer"],
+            ),
+            self._make_product(
+                url_suffix="utility-basket-b",
+                title="Storage Basket Organizer",
+                description="Generic basket and organizer",
+                category_id="others",
+                tags=["basket", "storage"],
+            ),
+        ]
+
+        candidates = self._prepare_candidates(products)
+        ranked_candidates, _, _ = db_module.rank_product_candidates_for_query(candidates, "storage basket")
+        resolved_category_id = db_module.resolve_batch_category(ranked_candidates, None)
+        normalized_candidates = db_module.apply_batch_category_to_candidates(
+            ranked_candidates,
+            resolved_category_id=resolved_category_id,
+        )
+        persisted = db_module.upsert_prepared_product_candidates(normalized_candidates, with_meta=True)
+
+        self.assertEqual(resolved_category_id, "others")
+        stored = [db_module.get_product(product_id) for product_id in persisted["productIds"]]
+        self.assertTrue(all(product is not None and product["categoryId"] == "others" for product in stored))
+
+    def test_ranked_batch_persistence_does_not_store_rejected_candidates(self):
+        relevant = self._make_product(
+            url_suffix="kitchen-blender",
+            title="Kitchen Blender",
+            description="Countertop blender for smoothies",
+            category_id="home",
+            tags=["blender", "kitchen", "smoothie"],
+        )
+        unrelated = self._make_product(
+            url_suffix="tennis-ball-can",
+            title="Championship Tennis Ball Can",
+            description="Pressurized tennis balls for match play",
+            category_id="sports",
+            tags=["tennis", "ball", "sports"],
+        )
+
+        candidates = self._prepare_candidates([relevant, unrelated])
+        ranked_candidates, exact_count, filtered_count = db_module.rank_product_candidates_for_query(candidates, "blender")
+        persisted = db_module.upsert_prepared_product_candidates(ranked_candidates, with_meta=True)
+
+        self.assertEqual(exact_count, 1)
+        self.assertEqual(filtered_count, 1)
+        self.assertEqual(len(persisted["productIds"]), 1)
+        payload = db_module.list_products(page=1, page_size=10)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["name"], "Kitchen Blender")
+
+    def test_upsert_prepared_candidates_does_not_downgrade_non_other_category(self):
+        original = self._make_product(
+            url_suffix="rubiks-upgrade",
+            title="Rubik's Cube Original",
+            description="Classic cube puzzle toy",
+            category_id="toys",
+            tags=["rubik", "cube", "puzzle"],
+        )
+        product_id = self._upsert([original])[0]
+
+        downgraded_candidate = self._make_product(
+            url_suffix="rubiks-upgrade",
+            title="Rubik's Cube Original",
+            description="Same item recollected as generic other",
+            category_id="others",
+            tags=["rubik", "cube"],
+        )
+        candidates = self._prepare_candidates([downgraded_candidate])
+        db_module.upsert_prepared_product_candidates(candidates, with_meta=True)
+
+        refreshed = db_module.get_product(product_id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(refreshed["categoryId"], "toys")
+
+    def test_query_results_and_append_share_one_collection_code(self):
+        products = [
+            self._make_product(
+                url_suffix=f"chair-{index}",
+                title=f"Accent Chair Variant {index}",
+                description="Living room accent chair",
+                category_id="home",
+                tags=["chair", "accent", "home"],
+            )
+            for index in range(1, 5)
+        ]
+        product_ids = self._upsert(products)
+
+        db_module.save_query_results(
+            "search::home::chair",
+            "chair",
+            page_number=1,
+            provider="cache",
+            product_ids=product_ids[:2],
+            query_kind="search",
+            category_id="home",
+            query_variants=["chair"],
+        )
+        metadata = db_module.get_query_metadata("search::home::chair")
+        assert metadata is not None
+        collection_code = metadata["active_collection_code"]
+
+        db_module.append_query_results(
+            "search::home::chair",
+            "chair",
+            provider="cache",
+            product_ids=product_ids[2:],
+            page_size=2,
+            query_kind="search",
+            category_id="home",
+            query_variants=["chair"],
+        )
+
+        refreshed_metadata = db_module.get_query_metadata("search::home::chair")
+        assert refreshed_metadata is not None
+        self.assertEqual(refreshed_metadata["active_collection_code"], collection_code)
+        stored = [db_module.get_product(product_id) for product_id in product_ids]
+        self.assertTrue(all(product is not None and product["collectionCode"] == collection_code for product in stored))
+        with db_module.get_connection() as connection:
+            pages = connection.execute(
+                """
+                SELECT product_id, page_number
+                FROM collection_group_products
+                WHERE group_code = ?
+                ORDER BY page_number ASC, rank ASC
+                """,
+                (collection_code,),
+            ).fetchall()
+        self.assertEqual(len(pages), 4)
+        self.assertEqual([int(row["page_number"]) for row in pages], [1, 1, 2, 2])
+
+    def test_related_products_prioritize_same_collection_before_category_fallback(self):
+        products = [
+            self._make_product(
+                url_suffix="accent-chair-anchor",
+                title="Harbor Accent Chair",
+                description="Modern accent chair for living room seating",
+                category_id="home",
+                provider="Target",
+                brand="Harbor",
+                price=120.0,
+                tags=["chair", "accent", "living room"],
+                family_key="harbor-chair",
+            ),
+            self._make_product(
+                url_suffix="accent-chair-match-a",
+                title="Harbor Accent Chair Linen",
+                description="Matching accent chair collected with the anchor product",
+                category_id="home",
+                provider="Target",
+                brand="Harbor",
+                price=118.0,
+                tags=["chair", "accent", "linen"],
+                family_key="harbor-chair",
+            ),
+            self._make_product(
+                url_suffix="accent-chair-match-b",
+                title="Harbor Accent Chair Velvet",
+                description="Another matching accent chair from the same collection",
+                category_id="home",
+                provider="Target",
+                brand="Harbor",
+                price=125.0,
+                tags=["chair", "accent", "velvet"],
+                family_key="harbor-chair-alt",
+            ),
+            self._make_product(
+                url_suffix="accent-chair-fallback",
+                title="Modern Accent Lounge Chair",
+                description="Same-category fallback result",
+                category_id="home",
+                provider="Walmart",
+                brand="Moderno",
+                price=129.0,
+                tags=["chair", "accent", "lounge"],
+                family_key="moderno-chair",
+            ),
+        ]
+        product_ids = self._upsert(products)
+        anchor_id, grouped_a_id, grouped_b_id, fallback_id = product_ids
+        db_module.save_query_results(
+            "search::home::accent-chair",
+            "accent chair",
+            page_number=1,
+            provider="cache",
+            product_ids=[anchor_id, grouped_a_id, grouped_b_id],
+            query_kind="search",
+            category_id="home",
+            query_variants=["accent chair"],
+        )
+
+        payload = db_module.get_related_products(anchor_id, page=1, page_size=3)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertIsNotNone(payload["groupCode"])
+        self.assertEqual(payload["groupMatchCount"], 2)
+        self.assertTrue(payload["fallbackUsed"])
+        self.assertEqual(payload["items"][2]["id"], fallback_id)
+        self.assertEqual({payload["items"][0]["id"], payload["items"][1]["id"]}, {grouped_a_id, grouped_b_id})
+
+    def test_related_product_fallback_excludes_cross_category_matches(self):
+        products = [
+            self._make_product(
+                url_suffix="rubiks-anchor",
+                title="Rubik's Cube Original 3x3",
+                description="Classic cube puzzle toy",
+                category_id="toys",
+                provider="Target",
+                brand="Rubik's",
+                price=14.0,
+                tags=["rubik", "cube", "puzzle"],
+            ),
+            self._make_product(
+                url_suffix="rubiks-same-category",
+                title="Rubik's Speed Cube",
+                description="Same-category speed cube toy",
+                category_id="toys",
+                provider="Walmart",
+                brand="Rubik's",
+                price=16.0,
+                tags=["rubik", "cube", "speed cube"],
+            ),
+            self._make_product(
+                url_suffix="rubiks-cross-category",
+                title="Rubik's Cube Desk Organizer",
+                description="Strong text overlap but stored in others",
+                category_id="others",
+                provider="Target",
+                brand="Rubik's",
+                price=18.0,
+                tags=["rubik", "cube", "desk"],
+            ),
+        ]
+        product_ids = self._upsert(products)
+        anchor_id, same_category_id, cross_category_id = product_ids
+        db_module.save_query_results(
+            "search::toys::rubik-cube",
+            "rubik cube",
+            page_number=1,
+            provider="cache",
+            product_ids=[anchor_id],
+            query_kind="search",
+            category_id="toys",
+            query_variants=["rubik cube"],
+        )
+
+        payload = db_module.get_related_products(anchor_id, page=1, page_size=5)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        returned_ids = [item["id"] for item in payload["items"]]
+        self.assertIn(same_category_id, returned_ids)
+        self.assertNotIn(cross_category_id, returned_ids)
+        self.assertEqual(payload["groupMatchCount"], 0)
+        self.assertTrue(payload["fallbackUsed"])
 
     def test_reset_product_linked_state_preserves_users_sessions_and_search_history(self):
         primary = ProviderProduct(
@@ -1764,35 +2280,35 @@ class DatabaseTests(unittest.TestCase):
     def test_stored_related_rows_are_revalidated_before_return(self):
         anchor = ProviderProduct(
             provider="Target",
-            source_url="https://www.target.com/p/tennis-ball-can/-/A-7201",
-            canonical_source_url="https://www.target.com/p/tennis-ball-can/-/A-7201",
-            title="Championship Tennis Ball Can",
-            description="Pressurized tennis balls for match play",
+            source_url="https://www.target.com/p/cap-neoprene-dumbbell-orange/-/A-7201",
+            canonical_source_url="https://www.target.com/p/cap-neoprene-dumbbell-orange/-/A-7201",
+            title="CAP Neoprene Dumbbell 3lbs - Orange",
+            description="Neoprene dumbbell for strength training",
             price=14.99,
             currency="USD",
             category_id="sports",
             category="Sports",
             brand="Ace",
-            source_image_url="https://images.example.com/tennis-ball-can.jpg",
+            source_image_url="https://images.example.com/cap-neoprene-dumbbell-orange.jpg",
             rating=4.8,
             review_count=64,
-            tags=["tennis", "ball", "sports"],
+            tags=["cap", "dumbbell", "weights"],
         )
         related_ball = ProviderProduct(
             provider="Target",
-            source_url="https://www.target.com/p/training-tennis-ball-pack/-/A-7202",
-            canonical_source_url="https://www.target.com/p/training-tennis-ball-pack/-/A-7202",
-            title="Training Tennis Ball Pack",
-            description="Durable tennis ball pack for practice sessions",
+            source_url="https://www.target.com/p/cap-neoprene-dumbbell-blue/-/A-7202",
+            canonical_source_url="https://www.target.com/p/cap-neoprene-dumbbell-blue/-/A-7202",
+            title="CAP Neoprene Dumbbell 5lbs - Blue",
+            description="Neoprene dumbbell for strength training",
             price=19.99,
             currency="USD",
             category_id="sports",
             category="Sports",
             brand="Ace",
-            source_image_url="https://images.example.com/training-tennis-ball-pack.jpg",
+            source_image_url="https://images.example.com/cap-neoprene-dumbbell-blue.jpg",
             rating=4.3,
             review_count=28,
-            tags=["tennis", "ball", "practice"],
+            tags=["cap", "dumbbell", "weights"],
         )
         unrelated_milk = ProviderProduct(
             provider="Target",
@@ -1814,13 +2330,13 @@ class DatabaseTests(unittest.TestCase):
             [anchor, related_ball, unrelated_milk],
             {
                 anchor.source_image_url: {
-                    "local_image_key": "img-tennis-ball-can",
+                    "local_image_key": "img-cap-neoprene-dumbbell-orange",
                     "image_mime": "image/jpeg",
                     "image_width": 640,
                     "image_height": 640,
                 },
                 related_ball.source_image_url: {
-                    "local_image_key": "img-training-tennis-ball-pack",
+                    "local_image_key": "img-cap-neoprene-dumbbell-blue",
                     "image_mime": "image/jpeg",
                     "image_width": 640,
                     "image_height": 640,
@@ -1861,8 +2377,8 @@ class DatabaseTests(unittest.TestCase):
             provider="Target",
             source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
             canonical_source_url="https://www.target.com/p/rubiks-cube-classic/-/A-7301",
-            title="Rubik's Cube The Original 3x3 Cube",
-            description="Classic Rubik puzzle cube brain teaser and fidget toy",
+            title="Rubik's Puzzle Cube Toy",
+            description="Classic Rubik cube puzzle toy for brain teaser fun",
             price=10.49,
             currency="USD",
             category_id="toys",
@@ -1877,12 +2393,12 @@ class DatabaseTests(unittest.TestCase):
             provider="Walmart",
             source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
             canonical_source_url="https://www.walmart.com/ip/rubiks-speed-cube/7302",
-            title="Rubik's 3x3 Speed Cube",
-            description="Magnetic Rubik speed cube for fast solving",
+            title="Rubik's Cube Brain Teaser Puzzle",
+            description="Classic Rubik cube puzzle toy for brain teaser fun",
             price=14.99,
             currency="USD",
-            category_id="others",
-            category="Others",
+            category_id="toys",
+            category="Toys",
             brand="Rubik's",
             source_image_url="https://images.example.com/rubiks-speed-cube.jpg",
             rating=4.6,

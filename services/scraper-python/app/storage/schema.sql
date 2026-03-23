@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS products (
   ai_category_reason TEXT,
   ai_category_updated_at TEXT,
   brand TEXT,
+  collection_code TEXT,
   source_image_url TEXT NOT NULL,
   image_gallery_json TEXT NOT NULL DEFAULT '[]',
   family_key TEXT,
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS products (
 
 CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_products_collection_code ON products(collection_code);
 
 CREATE TABLE IF NOT EXISTS queries (
   normalized_query TEXT PRIMARY KEY,
@@ -59,7 +61,8 @@ CREATE TABLE IF NOT EXISTS queries (
   last_completed_at TEXT,
   last_error TEXT,
   next_page_token_json TEXT,
-  query_variants_json TEXT NOT NULL DEFAULT '[]'
+  query_variants_json TEXT NOT NULL DEFAULT '[]',
+  active_collection_code TEXT
 );
 
 CREATE TABLE IF NOT EXISTS query_products (
@@ -75,6 +78,34 @@ CREATE TABLE IF NOT EXISTS query_products (
 );
 
 CREATE INDEX IF NOT EXISTS idx_query_products_query_page ON query_products(normalized_query, page_number, rank);
+
+CREATE TABLE IF NOT EXISTS collection_groups (
+  code TEXT PRIMARY KEY,
+  context_key TEXT NOT NULL,
+  display_query TEXT NOT NULL,
+  query_kind TEXT NOT NULL,
+  requested_category_id TEXT,
+  resolved_category_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_groups_context ON collection_groups(context_key, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS collection_group_products (
+  group_code TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  page_number INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (group_code, product_id),
+  FOREIGN KEY (group_code) REFERENCES collection_groups(code),
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_group_products_group_rank
+  ON collection_group_products(group_code, page_number, rank);
 
 CREATE TABLE IF NOT EXISTS reviews (
   id TEXT PRIMARY KEY,
