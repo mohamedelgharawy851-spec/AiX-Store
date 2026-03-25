@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ShopEase Project Guide</title>
+<style>
+body { font-family: Arial, sans-serif; line-height: 1.45; color: #111; margin: 28px; }
+h1, h2, h3, h4 { color: #1f3c88; margin-top: 22px; }
+h1 { font-size: 26px; }
+h2 { font-size: 20px; border-bottom: 1px solid #d0d7de; padding-bottom: 4px; }
+h3 { font-size: 16px; }
+h4 { font-size: 13px; color: #222; margin-top: 18px; }
+p, li { font-size: 11px; }
+code { font-family: Consolas, monospace; background: #f6f8fa; padding: 1px 4px; border-radius: 3px; }
+ul { margin-top: 6px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<h1>ShopEase Project Guide</h1>
+<p>Generated on 2026-03-25. This document is intended to make the whole repository understandable at the folder, file, and function level.</p>
+<h2>System Overview</h2>
+<p>ShopEase is a mobile-first shopping discovery app. The Expo React Native client talks to a hosted or local runtime, the runtime fronts a Python FastAPI backend, and the backend owns the catalog, persistence, search expansion, live discovery, personalization, and image caching. The project also keeps a Node runtime/proxy layer, design exports, migration scripts, and architecture notes in the same repository.</p>
+<ul>
+<li>Frontend: Expo + React Native in `apps/mobile`.</li>
+<li>Primary backend: FastAPI service in `services/scraper-python`.</li>
+<li>Node runtime/proxy: `services/scraper`.</li>
+<li>Primary production data/auth service: Supabase Postgres + Supabase Auth.</li>
+<li>Live search expansion/discovery: Apify.</li>
+<li>Optional/local AI assist: Ollama with TinyLlama-style prompts and schemas.</li>
+<li>Reference/legacy metasearch infrastructure: SearXNG in `infra/searxng`.</li>
+</ul>
+<h2>Request Flow</h2>
+<ul>
+<li>The mobile app resolves a runtime base URL in `apps/mobile/src/runtime/client.ts`.</li>
+<li>UI actions in `apps/mobile/App.tsx` call typed client wrappers under `apps/mobile/src/*/client.ts`.</li>
+<li>The request hits the Node runtime or directly the Python runtime, depending on deployment and environment.</li>
+<li>FastAPI routes in `services/scraper-python/app/main.py` validate auth/session context and delegate to `CatalogJobRunner` or direct storage helpers.</li>
+<li>`services/scraper-python/app/jobs.py` orchestrates bootstrap, search, live discovery, provider extraction, persistence, and pagination.</li>
+<li>`services/scraper-python/app/storage/db.py` stores products, queries, related rows, user events, favorites, recommendations, and cached AI/discovery state.</li>
+<li>Responses are normalized into mobile-friendly payloads and rendered by the React Native screens.</li>
+</ul>
+<h2>Feature Logic Map</h2>
+<h3>Authentication and Session Logic</h3>
+<p>The login flow starts in `apps/mobile/App.tsx` through `AuthScreen`, `submitAuth`, `restoreSession`, and `handleLogout`. The mobile app talks to `apps/mobile/src/auth/client.ts`, persists the bearer token with `apps/mobile/src/auth/session.ts`, and relies on `apps/mobile/src/auth/types.ts` for response shapes. On the backend, `services/scraper-python/app/main.py` exposes `/auth/signup`, `/auth/login`, `/auth/logout`, `/me`, and event endpoints. `verify_supabase_jwt` validates Supabase-issued tokens, while the user/profile/session records live in `services/scraper-python/app/storage/db.py`.</p>
+<h3>Home, Catalog, and Browse Logic</h3>
+<p>The home and category experience is orchestrated in `apps/mobile/App.tsx` via `HomeScreen`, catalog pagination handlers, offer rails, and product cards. The app calls `bootstrapCatalog` and `listCatalog` from `apps/mobile/src/catalog/client.ts`. The backend receives those requests in `services/scraper-python/app/main.py`, routes them into `CatalogJobRunner.ensure_bootstrap()` and `CatalogJobRunner.list_category()` in `services/scraper-python/app/jobs.py`, then persists/reads products through `services/scraper-python/app/storage/db.py`. Featured offers are derived from discountable products, and image URLs are normalized/cached before being sent back to the app.</p>
+<h3>Search and Discovery Logic</h3>
+<p>Search starts with `SearchField` and `handleSearchSubmit` inside `apps/mobile/App.tsx`, then uses `searchCatalog` from `apps/mobile/src/catalog/client.ts`. The backend route `catalog_search` in `services/scraper-python/app/main.py` delegates to `CatalogJobRunner.search()` in `services/scraper-python/app/jobs.py`. That flow can query cached products first, expand the query through the AI layer, and run live discovery through Apify (`services/scraper-python/app/discovery/apify_client.py`). Discovery hits are normalized (`normalization.py`), ranked (`ranking.py`), converted into provider fetches, and finally upserted into the catalog DB.</p>
+<h3>Product Detail and Related Logic</h3>
+<p>When the user opens a product, `openProduct`, `ProductDetailScreen`, and `openRelatedScreen` in `apps/mobile/App.tsx` coordinate the detail/related experience. The mobile client calls `getProductDetail` and `getRelatedProducts`. The backend answers through `catalog_product_detail` and `catalog_product_related` in `services/scraper-python/app/main.py`, with most of the work handled in `CatalogJobRunner.get_detail()` and `CatalogJobRunner.get_related()`. The storage layer builds image galleries, variant options, review payloads, family keys, cached related rows, and live fallback related matches.</p>
+<h3>Favorites, History, and Recommendations Logic</h3>
+<p>The profile area in `apps/mobile/App.tsx` coordinates `FavoritesScreen`, `ProfileScreen`, recommendation pagination, and history pagination. It uses API wrappers from `apps/mobile/src/favorites/client.ts`, `apps/mobile/src/history/client.ts`, and `apps/mobile/src/recommendations/client.ts`. Backend user routes in `services/scraper-python/app/main.py` call storage-layer functions in `services/scraper-python/app/storage/db.py` that record events, dedupe visible history, compute interest signals, build personalized recommendations, and keep favorites synchronized.</p>
+<h3>AI Assistance Logic</h3>
+<p>The AI layer is optional and controlled by feature flags in `services/scraper-python/app/ai/config.py`. Query rewrites are generated by `generate_rewrite_plan()` in `rewrite_service.py` using prompts from `prompts.py`, schemas from `schemas.py`, and model access through `OllamaModelManager` in `model_manager.py`. Ambiguous category decisions flow through `category_judge.py`. Cache and logging helpers record rewrite reuse and AI-run metadata. The project documentation in `docs/ai/` explains the intended prompt contracts and rollout strategy.</p>
+<h3>Storage, Scoring, and Data Quality Techniques</h3>
+<p>Most business rules live in `services/scraper-python/app/storage/db.py`. Important techniques include category-rule classification, book-like product repair, family-key grouping, variant metadata extraction, image presence enforcement, query/result caching, related-product revalidation, session-scoped history and recommendations, and Postgres compatibility via `postgres_compat.py`. The service uses SQLite-style logic for local development/tests and a translated Postgres path for Supabase in production.</p>
+<h3>External Services and Infrastructure</h3>
+<p>Supabase is the active auth and Postgres backend. Apify is the active live-search/discovery provider. Hugging Face Spaces appears in runtime URLs and is used as the hosted API/runtime target for mobile preview builds. Ollama/TinyLlama powers optional local AI rewrite/category tasks. SearXNG is still present as optional/local infrastructure and documentation, but the live path has moved to Apify. Neo4j variables exist in `.env.example` and a local Neo4j bundle exists in the workspace, but the tracked application code does not currently wire Neo4j into the active request path. Railway and Docker files define deployment paths for the backend services.</p>
+<h2>Important Techniques Used in the Codebase</h2>
+<ul>
+<li>Category classification combines rule-based heuristics, strong phrases, include/exclude terms, and optional AI assistance for ambiguous cases.</li>
+<li>Product quality filters reject items with no images, impossible pricing, or obviously wrong category assignments.</li>
+<li>Family keys and variant metadata are used to deduplicate variants while still exposing variant selection in the detail screen.</li>
+<li>Related products combine collection-group context, same-category matching, cached related rows, and live fallback discovery.</li>
+<li>User recommendations are computed from favorites, history, search activity, and session-scoped interest signals.</li>
+<li>A compatibility layer rewrites SQLite-shaped SQL so the same business logic can run against Supabase Postgres.</li>
+<li>Image URLs are fetched and cached locally so the app can serve stable image endpoints.</li>
+<li>Query results, discovery hits, and AI rewrites are cached to reduce repeated network/model cost.</li>
+</ul>
+<h2>Folder and File Reference</h2>
+<h3>.</h3>
+<p>Repository-level files that describe the project, shared tooling, and workspace configuration.</p>
+<h4>.dockerignore</h4>
+<p>Purpose: Docker build ignore rules for the repository root.</p>
+<p>Contains: Lists files and directories that should not be sent into Docker build contexts.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>.env.example</h4>
+<p>Purpose: Environment-variable template for local and hosted development.</p>
+<p>Contains: Documents database, Supabase, Apify, AI, optional Neo4j, and other integration settings.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>.gitignore</h4>
+<p>Purpose: Git ignore rules for development artifacts.</p>
+<p>Contains: Defines which generated files, caches, and secrets should stay out of version control.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>PLAN.md</h4>
+<p>Purpose: Planning and roadmap notes for the project.</p>
+<p>Contains: Captures product/engineering planning context rather than executable code.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>README.md</h4>
+<p>Purpose: Top-level onboarding document for the repository.</p>
+<p>Contains: Explains what the project is, how the runtimes fit together, and how to run common workflows.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>package-lock.json</h4>
+<p>Purpose: Locked npm dependency graph for the workspace root.</p>
+<p>Contains: Pins package versions so installs are reproducible.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>package.json</h4>
+<p>Purpose: Workspace manifest for shared scripts.</p>
+<p>Contains: Defines root npm scripts and top-level development dependencies.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>apps/mobile</h3>
+<p>Expo React Native application. This is the user-facing client with login, home, catalog, detail, favorites, profile, and related-product flows.</p>
+<h4>apps/mobile/App.tsx</h4>
+<p>Purpose: Single-file mobile application shell and screen coordinator.</p>
+<p>Contains: Contains navigation state, screen components, UI helpers, pagination handlers, cache helpers, and feature orchestration for login, home, search, detail, favorites, history, related products, and profile.</p>
+<ul>
+<li>`iconName()` - Implements icon name in the mobile app shell.</li>
+<li>`uniqueProducts()` - Implements unique products in the mobile app shell.</li>
+<li>`normalizeRuntimeAssetUrl()` - Implements normalize runtime asset url in the mobile app shell.</li>
+<li>`firstNonEmptyUrl()` - Implements first non empty url in the mobile app shell.</li>
+<li>`uniqueImageUrls()` - Implements unique image urls in the mobile app shell.</li>
+<li>`fallbackCategoryQuery()` - Implements fallback category query in the mobile app shell.</li>
+<li>`imageGalleryForProduct()` - Implements image gallery for product in the mobile app shell.</li>
+<li>`productFromVariantSummary()` - Implements product from variant summary in the mobile app shell.</li>
+<li>`offerDiscount()` - Implements offer discount in the mobile app shell.</li>
+<li>`pickOfferProducts()` - Selects  offer products from available options.</li>
+<li>`pickDiverseProducts()` - Selects  diverse products from available options.</li>
+<li>`expectedCatalogContextKey()` - Implements expected catalog context key in the mobile app shell.</li>
+<li>`catalogCacheKey()` - Implements catalog cache key in the mobile app shell.</li>
+<li>`recommendationCacheKey()` - Implements recommendation cache key in the mobile app shell.</li>
+<li>`historyCacheKey()` - Implements history cache key in the mobile app shell.</li>
+<li>`relatedCacheKey()` - Implements related cache key in the mobile app shell.</li>
+<li>`favoritesCacheKey()` - Implements favorites cache key in the mobile app shell.</li>
+<li>`collectCatalogItemsFromCache()` - Implements collect catalog items from cache in the mobile app shell.</li>
+<li>`buildCatalogContext()` - Implements build catalog context in the mobile app shell.</li>
+<li>`formatDate()` - Formats  date for display or transport.</li>
+<li>`interestLabel()` - Implements interest label in the mobile app shell.</li>
+<li>`snapshotToProduct()` - Implements snapshot to product in the mobile app shell.</li>
+<li>`ScreenShell()` - Implements screen shell in the mobile app shell.</li>
+<li>`BrandHero()` - Implements brand hero in the mobile app shell.</li>
+<li>`SearchField()` - Implements search field in the mobile app shell.</li>
+<li>`PromoHeroCard()` - Implements promo hero card in the mobile app shell.</li>
+<li>`SkeletonBlock()` - Implements skeleton block in the mobile app shell.</li>
+<li>`ProductImage()` - Implements product image in the mobile app shell.</li>
+<li>`OfferCardTile()` - Implements offer card tile in the mobile app shell.</li>
+<li>`AutoScrollingOfferRail()` - Implements auto scrolling offer rail in the mobile app shell.</li>
+<li>`run()` - Implements run in the mobile app shell.</li>
+<li>`pauseRail()` - Pauses  rail.</li>
+<li>`resumeRailSoon()` - Resumes  rail soon.</li>
+<li>`ProductCard()` - Implements product card in the mobile app shell.</li>
+<li>`ProductCardSkeleton()` - Implements product card skeleton in the mobile app shell.</li>
+<li>`HistoryRowSkeleton()` - Implements history row skeleton in the mobile app shell.</li>
+<li>`ShowMoreButton()` - Implements show more button in the mobile app shell.</li>
+<li>`EmptyState()` - Implements empty state in the mobile app shell.</li>
+<li>`HomeScreen()` - Implements home screen in the mobile app shell.</li>
+<li>`CatalogScreen()` - Implements catalog screen in the mobile app shell.</li>
+<li>`ProductDetailScreen()` - Implements product detail screen in the mobile app shell.</li>
+<li>`handleGalleryLayout()` - Handles the  gallery layout interaction or event.</li>
+<li>`handleGalleryScroll()` - Handles the  gallery scroll interaction or event.</li>
+<li>`RelatedScreen()` - Implements related screen in the mobile app shell.</li>
+<li>`ProfileScreen()` - Implements profile screen in the mobile app shell.</li>
+<li>`FavoritesScreen()` - Implements favorites screen in the mobile app shell.</li>
+<li>`AuthScreen()` - Implements auth screen in the mobile app shell.</li>
+<li>`BottomTab()` - Implements bottom tab in the mobile app shell.</li>
+<li>`isFavoriteProduct()` - Implements is favorite product in the mobile app shell.</li>
+<li>`mergeFavoriteIds()` - Implements merge favorite ids in the mobile app shell.</li>
+<li>`markProductsFavoriteState()` - Implements mark products favorite state in the mobile app shell.</li>
+<li>`applyFavoriteState()` - Implements apply favorite state in the mobile app shell.</li>
+<li>`abortArea()` - Implements abort area in the mobile app shell.</li>
+<li>`setCatalogContextState()` - Implements set catalog context state in the mobile app shell.</li>
+<li>`clearUserScopedCaches()` - Implements clear user scoped caches in the mobile app shell.</li>
+<li>`resetDetailNavigation()` - Implements reset detail navigation in the mobile app shell.</li>
+<li>`fireUserEvent()` - Sends  user event into the backend or local event pipeline.</li>
+<li>`loadRecommendationsPage()` - Implements load recommendations page in the mobile app shell.</li>
+<li>`loadHistoryPage()` - Implements load history page in the mobile app shell.</li>
+<li>`loadFavoritesPage()` - Implements load favorites page in the mobile app shell.</li>
+<li>`loadRelatedPage()` - Implements load related page in the mobile app shell.</li>
+<li>`loadCatalogPage()` - Implements load catalog page in the mobile app shell.</li>
+<li>`openProduct()` - Opens  product in the mobile app shell.</li>
+<li>`selectProductVariant()` - Implements select product variant in the mobile app shell.</li>
+<li>`toggleFavorite()` - Toggles  favorite on or off.</li>
+<li>`openProductSource()` - Opens  product source in the mobile app shell.</li>
+<li>`restoreSession()` - Restores  session from saved state.</li>
+<li>`submitAuth()` - Submits  auth to the backend or next workflow step.</li>
+<li>`handleLogout()` - Handles the  logout interaction or event.</li>
+<li>`openTab()` - Opens  tab in the mobile app shell.</li>
+<li>`handleSearchChange()` - Handles the  search change interaction or event.</li>
+<li>`handleSearchSubmit()` - Handles the  search submit interaction or event.</li>
+<li>`handleCategoryPress()` - Handles the  category press interaction or event.</li>
+<li>`handleClearCategory()` - Handles the  clear category interaction or event.</li>
+<li>`handleShowMoreCatalog()` - Handles the  show more catalog interaction or event.</li>
+<li>`handleShowMoreRecommendations()` - Handles the  show more recommendations interaction or event.</li>
+<li>`handleShowMoreHistory()` - Handles the  show more history interaction or event.</li>
+<li>`handleShowMoreFavorites()` - Handles the  show more favorites interaction or event.</li>
+<li>`openRelatedScreen()` - Opens  related screen in the mobile app shell.</li>
+<li>`handleGrabMoreRelated()` - Handles the  grab more related interaction or event.</li>
+<li>`openHistoryEntry()` - Opens  history entry in the mobile app shell.</li>
+<li>`renderContent()` - Renders  content for the current UI state.</li>
+</ul>
+<h4>apps/mobile/app.json</h4>
+<p>Purpose: Expo application manifest.</p>
+<p>Contains: Stores app identity, icon/splash config, Android package name, and EAS metadata.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>apps/mobile/eas.json</h4>
+<p>Purpose: EAS build profile configuration.</p>
+<p>Contains: Defines Expo Application Services build behavior, especially the preview APK profile and runtime URL injection.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>apps/mobile/index.js</h4>
+<p>Purpose: Expo entry point.</p>
+<p>Contains: Registers the React Native root component.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>apps/mobile/package.json</h4>
+<p>Purpose: Mobile app package manifest.</p>
+<p>Contains: Defines Expo/React Native dependencies and developer scripts for running the app.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>apps/mobile/tsconfig.json</h4>
+<p>Purpose: TypeScript compiler settings for the mobile app.</p>
+<p>Contains: Configures TypeScript behavior for Expo/React Native development.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>apps/mobile/assets</h3>
+<p>Branding and launcher assets packaged into the mobile app.</p>
+<h4>apps/mobile/assets/aix-store-brand.png</h4>
+<p>Purpose: Mobile branding/image asset.</p>
+<p>Contains: Stores launcher, brand, or mark artwork used by Expo builds and the app shell.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>apps/mobile/assets/aix-store-icon.png</h4>
+<p>Purpose: Mobile branding/image asset.</p>
+<p>Contains: Stores launcher, brand, or mark artwork used by Expo builds and the app shell.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>apps/mobile/assets/aix-store-mark.png</h4>
+<p>Purpose: Mobile branding/image asset.</p>
+<p>Contains: Stores launcher, brand, or mark artwork used by Expo builds and the app shell.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>apps/mobile/src/auth</h3>
+<p>Client-side authentication helpers, token persistence, and auth-related types.</p>
+<h4>apps/mobile/src/auth/client.ts</h4>
+<p>Purpose: HTTP client for auth endpoints.</p>
+<p>Contains: Wraps sign up, sign in, sign out, profile lookup, and event posting against the backend API.</p>
+<ul>
+<li>`signUp()` - Implements sign up in the module.</li>
+<li>`signIn()` - Implements sign in in the module.</li>
+<li>`signOut()` - Implements sign out in the module.</li>
+<li>`getMe()` - Implements get me in the module.</li>
+<li>`postUserEvent()` - Implements post user event in the module.</li>
+</ul>
+<h4>apps/mobile/src/auth/session.ts</h4>
+<p>Purpose: Session token persistence helpers.</p>
+<p>Contains: Reads, writes, and clears the auth token on the device.</p>
+<ul>
+<li>`saveSessionToken()` - Implements save session token in the module.</li>
+<li>`readSessionToken()` - Implements read session token in the module.</li>
+<li>`clearSessionToken()` - Implements clear session token in the module.</li>
+</ul>
+<h4>apps/mobile/src/auth/types.ts</h4>
+<p>Purpose: Auth-related TypeScript contracts.</p>
+<p>Contains: Defines response shapes for the authenticated user and login/register flows.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>apps/mobile/src/catalog</h3>
+<p>Client-side catalog DTOs and HTTP wrappers for bootstrap, browsing, search, detail, and related results.</p>
+<h4>apps/mobile/src/catalog/client.ts</h4>
+<p>Purpose: HTTP client for catalog endpoints.</p>
+<p>Contains: Wraps bootstrap, list, search, detail, and related-product requests.</p>
+<ul>
+<li>`bootstrapCatalog()` - Implements bootstrap catalog in the module.</li>
+<li>`listCatalog()` - Implements list catalog in the module.</li>
+<li>`searchCatalog()` - Implements search catalog in the module.</li>
+<li>`getProductDetail()` - Implements get product detail in the module.</li>
+<li>`getRelatedProducts()` - Implements get related products in the module.</li>
+</ul>
+<h4>apps/mobile/src/catalog/types.ts</h4>
+<p>Purpose: Catalog domain models for the mobile app.</p>
+<p>Contains: Defines product, review, category, detail, list, AI metadata, and discovery metadata types used by the UI.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>apps/mobile/src/favorites</h3>
+<p>Client wrappers for favorite mutation and retrieval.</p>
+<h4>apps/mobile/src/favorites/client.ts</h4>
+<p>Purpose: Favorites API wrapper.</p>
+<p>Contains: Fetches favorites and sends favorite add/remove mutations.</p>
+<ul>
+<li>`getFavorites()` - Implements get favorites in the module.</li>
+<li>`addFavorite()` - Implements add favorite in the module.</li>
+<li>`removeFavorite()` - Implements remove favorite in the module.</li>
+</ul>
+<h3>apps/mobile/src/history</h3>
+<p>Client wrapper for user history retrieval.</p>
+<h4>apps/mobile/src/history/client.ts</h4>
+<p>Purpose: History API wrapper.</p>
+<p>Contains: Loads paginated user history from the backend.</p>
+<ul>
+<li>`getHistory()` - Implements get history in the module.</li>
+</ul>
+<h3>apps/mobile/src/recommendations</h3>
+<p>Client wrapper for personalized recommendations and trending items.</p>
+<h4>apps/mobile/src/recommendations/client.ts</h4>
+<p>Purpose: Recommendations API wrapper.</p>
+<p>Contains: Fetches personalized recommendations and trending items for the current user/session.</p>
+<ul>
+<li>`getRecommendations()` - Implements get recommendations in the module.</li>
+</ul>
+<h3>apps/mobile/src/runtime</h3>
+<p>Runtime URL selection and fetch helpers that let the mobile app talk to local or hosted backends.</p>
+<h4>apps/mobile/src/runtime/client.ts</h4>
+<p>Purpose: Runtime fetch and URL-resolution helper.</p>
+<p>Contains: Chooses the correct backend base URL and performs JSON fetches with consistent behavior.</p>
+<ul>
+<li>`extractMetroHost()` - Implements extract metro host in the module.</li>
+<li>`runtimeBaseUrl()` - Implements runtime base url in the module.</li>
+<li>`fetchRuntimeJson()` - Implements fetch runtime json in the module.</li>
+<li>`abortListener()` - Implements abort listener in the module.</li>
+</ul>
+<h3>apps/mobile/src/theme</h3>
+<p>Shared visual tokens used by the mobile UI.</p>
+<h4>apps/mobile/src/theme/tokens.ts</h4>
+<p>Purpose: Shared color and spacing tokens.</p>
+<p>Contains: Defines the mobile app design primitives used across the UI.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>docs</h3>
+<p>Project notes that explain architecture, API decisions, search strategy, and review findings.</p>
+<h4>docs/api-recommendations.md</h4>
+<p>Purpose: High-level note describing the lightweight runtime-first API strategy.</p>
+<p>Contains: Explains that the catalog runtime is the live source of truth and how search/redirect behavior works.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>docs/architecture.md</h4>
+<p>Purpose: Architecture overview document.</p>
+<p>Contains: Describes the system shape, runtime boundaries, and major data flows.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>docs/project-review.md</h4>
+<p>Purpose: Project review and findings document.</p>
+<p>Contains: Summarizes technical observations, risks, or review notes about the codebase.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>docs/ai</h3>
+<p>AI-specific notes, prompts, and rollout planning.</p>
+<h4>docs/ai/prompts.md</h4>
+<p>Purpose: Prompt contract reference for the AI layer.</p>
+<p>Contains: Documents the rewrite and category-judge prompt formats and output contracts.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>docs/ai/tinyllama-phase1.md</h4>
+<p>Purpose: AI rollout note for TinyLlama phase 1.</p>
+<p>Contains: Explains the first-stage plan for integrating local/assisted AI behavior.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>docs/search</h3>
+<p>Discovery/search integration notes, especially Apify and the legacy SearXNG path.</p>
+<h4>docs/search/apify-integration.md</h4>
+<p>Purpose: Documentation for the live Apify discovery path.</p>
+<p>Contains: Explains how Apify-based search expansion/discovery is configured and intended to run.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>docs/search/searxng-integration.md</h4>
+<p>Purpose: Documentation for the legacy/optional SearXNG path.</p>
+<p>Contains: Explains the older metasearch integration retained as reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>infra/searxng</h3>
+<p>Optional self-hosted SearXNG infrastructure kept as reference/local tooling.</p>
+<h4>infra/searxng/README.md</h4>
+<p>Purpose: Operational note for local SearXNG infrastructure.</p>
+<p>Contains: Explains how the optional SearXNG stack is configured and started.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>infra/searxng/docker-compose.yml</h4>
+<p>Purpose: Docker Compose definition for SearXNG.</p>
+<p>Contains: Starts the local SearXNG service and any supporting containers.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>infra/searxng/settings.yml</h4>
+<p>Purpose: SearXNG instance configuration.</p>
+<p>Contains: Defines engines and service-level settings for the local metasearch instance.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>scripts</h3>
+<p>Root-level development scripts for loading env files and starting the full local mobile stack.</p>
+<h4>scripts/load-env.mjs</h4>
+<p>Purpose: Shared environment loader for Node-side tooling.</p>
+<p>Contains: Parses `.env` and `.env.local` files and injects values into `process.env`.</p>
+<ul>
+<li>`parseValue()` - Implements parse value in the module.</li>
+<li>`parseEnvFile()` - Implements parse env file in the module.</li>
+<li>`loadAIXStoreEnv()` - Implements load a i x store env in the module.</li>
+</ul>
+<h4>scripts/start-mobile-live.mjs</h4>
+<p>Purpose: Full local development launcher.</p>
+<p>Contains: Boots the Python backend, boots the Node runtime if needed, configures Expo, and handles Android port-reverse/LAN access.</p>
+<ul>
+<li>`wait()` - Implements wait in the module.</li>
+<li>`resolveAdbBinary()` - Implements resolve adb binary in the module.</li>
+<li>`ensureAndroidReversePort()` - Implements ensure android reverse port in the module.</li>
+<li>`resolveLanHost()` - Implements resolve lan host in the module.</li>
+<li>`findBundledChromium()` - Implements find bundled chromium in the module.</li>
+<li>`requestHealth()` - Implements request health in the module.</li>
+<li>`resolvePythonBinary()` - Implements resolve python binary in the module.</li>
+<li>`ensurePythonRuntime()` - Implements ensure python runtime in the module.</li>
+<li>`ensureNodeRuntime()` - Implements ensure node runtime in the module.</li>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h3>services/scraper</h3>
+<p>Node.js runtime/proxy layer that decorates responses for the mobile app and can front the Python backend.</p>
+<h4>services/scraper/.dockerignore</h4>
+<p>Purpose: Docker ignore rules for the Node runtime.</p>
+<p>Contains: Keeps unnecessary local files out of the Node runtime image build context.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/.railwayignore</h4>
+<p>Purpose: Railway ignore rules for the Node runtime.</p>
+<p>Contains: Excludes files that should not be uploaded during Railway deployment.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/Dockerfile</h4>
+<p>Purpose: Container definition for the Node runtime.</p>
+<p>Contains: Builds the runtime image used to serve or proxy the catalog API.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/README.md</h4>
+<p>Purpose: Readme for the Node runtime service.</p>
+<p>Contains: Explains what the runtime does and how it is expected to be used.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/package-lock.json</h4>
+<p>Purpose: Locked dependency tree for the Node runtime.</p>
+<p>Contains: Pins runtime dependency versions.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/package.json</h4>
+<p>Purpose: Node runtime package manifest.</p>
+<p>Contains: Defines the start script and runtime dependencies for the proxy/decorator service.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/railway.toml</h4>
+<p>Purpose: Railway deployment config for the Node runtime.</p>
+<p>Contains: Describes how the runtime should be deployed on Railway.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/server.mjs</h4>
+<p>Purpose: HTTP server for the Node runtime/proxy.</p>
+<p>Contains: Handles health checks, proxies catalog/auth requests, decorates payloads for the mobile app, and wakes the Python service when needed.</p>
+<ul>
+<li>`corsHeaders()` - Implements cors headers in the module.</li>
+<li>`sendJson()` - Implements send json in the module.</li>
+<li>`upstreamStartingPayload()` - Implements upstream starting payload in the module.</li>
+<li>`runtimeOrigin()` - Implements runtime origin in the module.</li>
+<li>`decorateProduct()` - Implements decorate product in the module.</li>
+<li>`decorateCatalogPayload()` - Implements decorate catalog payload in the module.</li>
+<li>`decorateProductDetail()` - Implements decorate product detail in the module.</li>
+<li>`decorateRecommendations()` - Implements decorate recommendations in the module.</li>
+<li>`decorateFavorites()` - Implements decorate favorites in the module.</li>
+<li>`decorateRelatedPayload()` - Implements decorate related payload in the module.</li>
+<li>`readRequestBody()` - Implements read request body in the module.</li>
+<li>`upstreamPolicy()` - Implements upstream policy in the module.</li>
+<li>`fetchUpstream()` - Implements fetch upstream in the module.</li>
+<li>`wakeUpFastApi()` - Implements wake up fast api in the module.</li>
+<li>`decodeJsonUpstream()` - Implements decode json upstream in the module.</li>
+<li>`proxyJson()` - Implements proxy json in the module.</li>
+<li>`proxyImage()` - Implements proxy image in the module.</li>
+</ul>
+<h3>services/scraper/data</h3>
+<p>Placeholder directory for local runtime catalog data.</p>
+<h4>services/scraper/data/.gitkeep</h4>
+<p>Purpose: Placeholder data file for the Node runtime.</p>
+<p>Contains: Keeps the data directory tracked in git.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>services/scraper/lib</h3>
+<p>Node runtime helpers for catalog shaping, scraping, config, utilities, and local persistence.</p>
+<h4>services/scraper/lib/catalog.mjs</h4>
+<p>Purpose: Catalog shaping and fallback logic for the Node runtime.</p>
+<p>Contains: Builds list/search/detail payloads, filters products, interleaves results, and computes simple relevance/offer behavior.</p>
+<ul>
+<li>`inferCategoryId()` - Infers  category id from the available inputs.</li>
+<li>`productSearchScore()` - Implements product search score in the module.</li>
+<li>`relatedScore()` - Implements related score in the module.</li>
+<li>`nearestScore()` - Implements nearest score in the module.</li>
+<li>`interleaveProducts()` - Implements interleave products in the module.</li>
+<li>`getCategories()` - Implements get categories in the module.</li>
+<li>`getOffers()` - Implements get offers in the module.</li>
+<li>`filterProducts()` - Implements filter products in the module.</li>
+<li>`hasBootstrapCoverage()` - Implements has bootstrap coverage in the module.</li>
+<li>`ensureBootstrap()` - Implements ensure bootstrap in the module.</li>
+<li>`listCatalog()` - Implements list catalog in the module.</li>
+<li>`searchCatalog()` - Implements search catalog in the module.</li>
+<li>`getProductDetail()` - Implements get product detail in the module.</li>
+<li>`buildCatalogPayload()` - Implements build catalog payload in the module.</li>
+</ul>
+<h4>services/scraper/lib/config.mjs</h4>
+<p>Purpose: Static category/source config for the Node runtime.</p>
+<p>Contains: Defines category metadata, source domains, and default limits.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper/lib/scraper.mjs</h4>
+<p>Purpose: Legacy Node-side scraping utilities.</p>
+<p>Contains: Collects and normalizes product data from retailer pages when the Node runtime is used directly.</p>
+<ul>
+<li>`inferCategoryId()` - Infers  category id from the available inputs.</li>
+<li>`getCategoryName()` - Implements get category name in the module.</li>
+<li>`inferSourceSite()` - Infers  source site from the available inputs.</li>
+<li>`queryScore()` - Implements query score in the module.</li>
+<li>`buildFallbackQueries()` - Implements build fallback queries in the module.</li>
+<li>`fetchHtml()` - Implements fetch html in the module.</li>
+<li>`fetchHtmlViaPython()` - Implements fetch html via python in the module.</li>
+<li>`fetchWalmartHtml()` - Implements fetch walmart html in the module.</li>
+<li>`tryParseJson()` - Implements try parse json in the module.</li>
+<li>`collectProductNodes()` - Implements collect product nodes in the module.</li>
+<li>`extractJsonLdProducts()` - Implements extract json ld products in the module.</li>
+<li>`extractNextData()` - Implements extract next data in the module.</li>
+<li>`extractMetaContent()` - Implements extract meta content in the module.</li>
+<li>`extractOriginalPrice()` - Implements extract original price in the module.</li>
+<li>`normalizeOffer()` - Implements normalize offer in the module.</li>
+<li>`normalizeReviews()` - Implements normalize reviews in the module.</li>
+<li>`toProductFromStructuredData()` - Implements to product from structured data in the module.</li>
+<li>`buildFallbackProduct()` - Implements build fallback product in the module.</li>
+<li>`scrapeProductPage()` - Implements scrape product page in the module.</li>
+<li>`normalizeWalmartImage()` - Implements normalize walmart image in the module.</li>
+<li>`pickWalmartImage()` - Selects  walmart image from available options.</li>
+<li>`toProductFromWalmartSearchItem()` - Implements to product from walmart search item in the module.</li>
+<li>`extractWalmartItemsFromHtml()` - Implements extract walmart items from html in the module.</li>
+<li>`browseWalmartCategory()` - Implements browse walmart category in the module.</li>
+<li>`searchWalmart()` - Implements search walmart in the module.</li>
+<li>`extractWalmartItemId()` - Implements extract walmart item id in the module.</li>
+<li>`normalizeWalmartReviewItem()` - Implements normalize walmart review item in the module.</li>
+<li>`scrapeWalmartReviewsPage()` - Implements scrape walmart reviews page in the module.</li>
+<li>`scrapeProductsForQuery()` - Implements scrape products for query in the module.</li>
+<li>`bootstrapProducts()` - Implements bootstrap products in the module.</li>
+<li>`enrichProductFromSource()` - Implements enrich product from source in the module.</li>
+</ul>
+<h4>services/scraper/lib/store.mjs</h4>
+<p>Purpose: Local JSON catalog persistence helpers.</p>
+<p>Contains: Loads, merges, normalizes, and saves catalog data for the Node runtime.</p>
+<ul>
+<li>`ensureDataFile()` - Implements ensure data file in the module.</li>
+<li>`mergeProductPair()` - Implements merge product pair in the module.</li>
+<li>`normalizeProduct()` - Implements normalize product in the module.</li>
+<li>`normalizeProducts()` - Implements normalize products in the module.</li>
+<li>`loadCatalogStore()` - Implements load catalog store in the module.</li>
+<li>`saveCatalogStore()` - Implements save catalog store in the module.</li>
+<li>`mergeProducts()` - Implements merge products in the module.</li>
+<li>`replaceCatalogStore()` - Implements replace catalog store in the module.</li>
+</ul>
+<h4>services/scraper/lib/utils.mjs</h4>
+<p>Purpose: General-purpose helpers for the Node runtime.</p>
+<p>Contains: Provides normalization, hashing, URL cleanup, tokenization, and array utilities.</p>
+<ul>
+<li>`normalizeWhitespace()` - Implements normalize whitespace in the module.</li>
+<li>`slugify()` - Converts text into a stable slug.</li>
+<li>`toNumber()` - Implements to number in the module.</li>
+<li>`hashId()` - Implements hash id in the module.</li>
+<li>`decodeHtmlEntities()` - Implements decode html entities in the module.</li>
+<li>`stripHtml()` - Implements strip html in the module.</li>
+<li>`pickFirst()` - Selects  first from available options.</li>
+<li>`toArray()` - Implements to array in the module.</li>
+<li>`uniqueBy()` - Implements unique by in the module.</li>
+<li>`safeUrl()` - Implements safe url in the module.</li>
+<li>`canonicalizeProductUrl()` - Canonicalizes  product url.</li>
+<li>`parseHostFromUrl()` - Implements parse host from url in the module.</li>
+<li>`nowIso()` - Implements now iso in the module.</li>
+<li>`tokenize()` - Splits text into normalized tokens.</li>
+</ul>
+<h3>services/scraper/scripts</h3>
+<p>Utility scripts used by the Node runtime.</p>
+<h4>services/scraper/scripts/fetch_url.py</h4>
+<p>Purpose: Utility fetch script used by scraping workflows.</p>
+<p>Contains: Retrieves page content from Python when a scriptable fetch path is needed.</p>
+<ul>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h3>services/scraper-python</h3>
+<p>Primary backend service. It owns the catalog API, persistence, discovery, recommendations, AI hooks, and migration tooling.</p>
+<h4>services/scraper-python/.railwayignore</h4>
+<p>Purpose: Railway ignore rules for the Python backend.</p>
+<p>Contains: Excludes local-only files from Python service deployment.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/Dockerfile</h4>
+<p>Purpose: Container definition for the Python backend.</p>
+<p>Contains: Builds the FastAPI service image with its runtime dependencies.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/railway.toml</h4>
+<p>Purpose: Railway deployment config for the Python backend.</p>
+<p>Contains: Describes how the Python API should run on Railway.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/requirements.txt</h4>
+<p>Purpose: Python dependency manifest.</p>
+<p>Contains: Pins backend, scraping, image, DB, and AI-support libraries.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>services/scraper-python/app</h3>
+<p>Main Python application package: API, jobs, config, env loading, utilities, and business rules.</p>
+<h4>services/scraper-python/app/__init__.py</h4>
+<p>Purpose: Package marker for the Python app.</p>
+<p>Contains: Makes the `app` directory importable.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/config.py</h4>
+<p>Purpose: Central backend configuration module.</p>
+<p>Contains: Defines ports, paths, category metadata, thresholds, provider settings, and shared constants.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/env.py</h4>
+<p>Purpose: Environment loader for the Python service.</p>
+<p>Contains: Parses repo-level env files before app startup so local development behaves consistently.</p>
+<ul>
+<li>`_repo_root()` - Implements repo root in the module.</li>
+<li>`_service_root()` - Implements service root in the module.</li>
+<li>`_parse_value()` - Parses value.</li>
+<li>`_parse_env_file()` - Parses env file.</li>
+<li>`load_env_files()` - Loads env files.</li>
+</ul>
+<h4>services/scraper-python/app/jobs.py</h4>
+<p>Purpose: High-level catalog orchestration layer.</p>
+<p>Contains: Coordinates bootstrap, category listing, search, discovery enrichment, ranking, persistence, pagination, and related-product generation.</p>
+<ul>
+<li>`_decode_json_value()` - Decodes json value.</li>
+<li>`_decode_string_list()` - Decodes string list.</li>
+<li>`CatalogJobRunner` - Main class/object for this file.</li>
+<li>`CatalogJobRunner.__init__()` - Initializes the object and wires in its dependencies/configuration.</li>
+<li>`CatalogJobRunner._provider_for_product()` - Implements provider for product in the catalog job runner.</li>
+<li>`CatalogJobRunner._related_search_queries()` - Implements related search queries in the catalog job runner.</li>
+<li>`CatalogJobRunner._related_search_query()` - Implements related search query in the catalog job runner.</li>
+<li>`CatalogJobRunner._build_related_payload()` - Builds related payload.</li>
+<li>`CatalogJobRunner._search_related_products()` - Implements search related products in the catalog job runner.</li>
+<li>`CatalogJobRunner._provider_sequence()` - Implements provider sequence in the catalog job runner.</li>
+<li>`CatalogJobRunner._safe_provider_search()` - Implements safe provider search in the catalog job runner.</li>
+<li>`CatalogJobRunner._safe_provider_search_by_urls()` - Implements safe provider search by urls in the catalog job runner.</li>
+<li>`CatalogJobRunner._persist_products()` - Implements persist products in the catalog job runner.</li>
+<li>`CatalogJobRunner._prepare_candidates()` - Prepares candidates for the next step.</li>
+<li>`CatalogJobRunner._rank_and_persist_products()` - Ranks and persist products by relevance or score.</li>
+<li>`CatalogJobRunner._category_context_key()` - Implements category context key in the catalog job runner.</li>
+<li>`CatalogJobRunner._search_context_key()` - Implements search context key in the catalog job runner.</li>
+<li>`CatalogJobRunner._category_variants()` - Implements category variants in the catalog job runner.</li>
+<li>`CatalogJobRunner._is_product_detail_url()` - Checks whether product detail url.</li>
+<li>`CatalogJobRunner._empty_cursor()` - Implements empty cursor in the catalog job runner.</li>
+<li>`CatalogJobRunner._normalize_discovery_pagination()` - Normalizes discovery pagination.</li>
+<li>`CatalogJobRunner._build_discovery_pagination()` - Builds discovery pagination.</li>
+<li>`CatalogJobRunner._load_cursor()` - Loads cursor.</li>
+<li>`CatalogJobRunner._discovery_cursor_has_more()` - Implements discovery cursor has more in the catalog job runner.</li>
+<li>`CatalogJobRunner._cursor_has_more()` - Implements cursor has more in the catalog job runner.</li>
+<li>`CatalogJobRunner._next_cursor_index()` - Implements next cursor index in the catalog job runner.</li>
+<li>`CatalogJobRunner._next_discovery_seed()` - Implements next discovery seed in the catalog job runner.</li>
+<li>`CatalogJobRunner._merge_engines()` - Merges engines.</li>
+<li>`CatalogJobRunner._related_family_tokens()` - Implements related family tokens in the catalog job runner.</li>
+<li>`CatalogJobRunner._product_related_tokens()` - Implements product related tokens in the catalog job runner.</li>
+<li>`CatalogJobRunner._matches_related_family()` - Implements matches related family in the catalog job runner.</li>
+<li>`CatalogJobRunner._list_context_items()` - Lists context items.</li>
+<li>`CatalogJobRunner._run_term_search()` - Implements run term search in the catalog job runner.</li>
+<li>`CatalogJobRunner._fetch_searxng_hits()` - Implements fetch searxng hits in the catalog job runner.</li>
+<li>`CatalogJobRunner._extract_discovery_products()` - Extracts discovery products.</li>
+<li>`CatalogJobRunner._run_discovery_search()` - Implements run discovery search in the catalog job runner.</li>
+<li>`CatalogJobRunner._ensure_context_results()` - Ensures context results is ready before the flow continues.</li>
+<li>`CatalogJobRunner._ensure_search_show_more_results()` - Ensures search show more results is ready before the flow continues.</li>
+<li>`CatalogJobRunner._ensure_related_show_more_results()` - Ensures related show more results is ready before the flow continues.</li>
+<li>`CatalogJobRunner._seed_term()` - Implements seed term in the catalog job runner.</li>
+<li>`CatalogJobRunner.ensure_bootstrap()` - Ensures bootstrap is ready before the flow continues.</li>
+<li>`CatalogJobRunner._baseline_queries_for_category()` - Implements baseline queries for category in the catalog job runner.</li>
+<li>`CatalogJobRunner._reseed_category_baseline()` - Implements reseed category baseline in the catalog job runner.</li>
+<li>`CatalogJobRunner.reseed_full_catalog_baseline()` - Implements reseed full catalog baseline in the catalog job runner.</li>
+<li>`CatalogJobRunner.backfill_product_galleries()` - Implements backfill product galleries in the catalog job runner.</li>
+<li>`CatalogJobRunner.list_category()` - Lists category.</li>
+<li>`CatalogJobRunner.search()` - Runs the main search flow for this component.</li>
+<li>`CatalogJobRunner.get_detail()` - Returns detail.</li>
+<li>`CatalogJobRunner.get_related()` - Returns related.</li>
+</ul>
+<h4>services/scraper-python/app/main.py</h4>
+<p>Purpose: FastAPI application entry point.</p>
+<p>Contains: Defines lifecycle startup, auth verification, API routes, image serving, and error handling.</p>
+<ul>
+<li>`_dotenv_path()` - Implements dotenv path in the API layer.</li>
+<li>`lifespan()` - Implements lifespan in the API layer.</li>
+<li>`_extract_token()` - Extracts token.</li>
+<li>`verify_supabase_jwt()` - Implements verify supabase jwt in the API layer.</li>
+<li>`_require_user_id()` - Implements require user id in the API layer.</li>
+<li>`_require_auth_context()` - Implements require auth context in the API layer.</li>
+<li>`_extract_client_session_id()` - Extracts client session id.</li>
+<li>`_effective_session_id()` - Implements effective session id in the API layer.</li>
+<li>`health()` - Reports whether the underlying integration/service is healthy.</li>
+<li>`health_db()` - Implements health db in the API layer.</li>
+<li>`ai_health()` - Implements ai health in the API layer.</li>
+<li>`discovery_health()` - Implements discovery health in the API layer.</li>
+<li>`bootstrap_catalog()` - Implements bootstrap catalog in the API layer.</li>
+<li>`catalog_products()` - Implements catalog products in the API layer.</li>
+<li>`catalog_search()` - Implements catalog search in the API layer.</li>
+<li>`discovery_query()` - Implements discovery query in the API layer.</li>
+<li>`discovery_cache()` - Implements discovery cache in the API layer.</li>
+<li>`ai_rewrite()` - Implements ai rewrite in the API layer.</li>
+<li>`ai_judge_category()` - Implements ai judge category in the API layer.</li>
+<li>`catalog_product_detail()` - Implements catalog product detail in the API layer.</li>
+<li>`catalog_product_related()` - Implements catalog product related in the API layer.</li>
+<li>`auth_signup()` - Implements auth signup in the API layer.</li>
+<li>`auth_login()` - Implements auth login in the API layer.</li>
+<li>`auth_logout()` - Implements auth logout in the API layer.</li>
+<li>`me()` - Implements me in the API layer.</li>
+<li>`me_history()` - Implements me history in the API layer.</li>
+<li>`me_favorites()` - Implements me favorites in the API layer.</li>
+<li>`me_favorite_put()` - Implements me favorite put in the API layer.</li>
+<li>`me_favorite_delete()` - Implements me favorite delete in the API layer.</li>
+<li>`me_recommendations()` - Implements me recommendations in the API layer.</li>
+<li>`me_events()` - Implements me events in the API layer.</li>
+<li>`cached_image()` - Implements cached image in the API layer.</li>
+<li>`unhandled_exception_handler()` - Implements unhandled exception handler in the API layer.</li>
+</ul>
+<h4>services/scraper-python/app/utils.py</h4>
+<p>Purpose: Shared backend utility functions.</p>
+<p>Contains: Provides text cleanup, URL handling, category inference, query expansion, price normalization, ID generation, HTML cleanup, and retry helpers.</p>
+<ul>
+<li>`now_iso()` - Implements now iso in the module.</li>
+<li>`normalize_whitespace()` - Normalizes whitespace.</li>
+<li>`slugify()` - Converts text into a stable slug.</li>
+<li>`hash_text()` - Implements hash text in the module.</li>
+<li>`canonicalize_url()` - Canonicalizes  url.</li>
+<li>`absolute_url()` - Implements absolute url in the module.</li>
+<li>`parse_float()` - Parses float.</li>
+<li>`to_cents()` - Implements to cents in the module.</li>
+<li>`from_cents()` - Implements from cents in the module.</li>
+<li>`normalize_offer_prices()` - Normalizes offer prices.</li>
+<li>`extract_first_number()` - Extracts first number.</li>
+<li>`tokenize()` - Splits text into normalized tokens.</li>
+<li>`singularize_token()` - Implements singularize token in the module.</li>
+<li>`looks_like_book_product()` - Implements looks like book product in the module.</li>
+<li>`infer_category_id()` - Infers  category id from the available inputs.</li>
+<li>`classify_category()` - Implements classify category in the module.</li>
+<li>`expand_query_variants()` - Implements expand query variants in the module.</li>
+<li>`expand_discovery_variants()` - Implements expand discovery variants in the module.</li>
+<li>`category_name()` - Implements category name in the module.</li>
+<li>`product_id_for_url()` - Implements product id for url in the module.</li>
+<li>`json_dumps()` - Implements json dumps in the module.</li>
+<li>`decode_srcset()` - Decodes srcset.</li>
+<li>`strip_html()` - Implements strip html in the module.</li>
+<li>`ensure_unique_by_key()` - Ensures unique by key is ready before the flow continues.</li>
+<li>`has_bot_block()` - Checks whether bot block is available.</li>
+<li>`retry_async()` - Retries an operation with the module-defined retry policy.</li>
+</ul>
+<h3>services/scraper-python/app/ai</h3>
+<p>AI support layer for query rewriting and ambiguous category review using Ollama/TinyLlama-style models.</p>
+<h4>services/scraper-python/app/ai/__init__.py</h4>
+<p>Purpose: Package marker for AI helpers.</p>
+<p>Contains: Makes the AI subpackage importable.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/ai/cache.py</h4>
+<p>Purpose: Cache helpers for AI rewrites.</p>
+<p>Contains: Stores and retrieves rewrite results so repeated searches avoid redundant model work.</p>
+<ul>
+<li>`_get_connection()` - Returns connection.</li>
+<li>`build_rewrite_cache_key()` - Builds rewrite cache key.</li>
+<li>`get_cached_rewrite()` - Returns cached rewrite.</li>
+<li>`save_rewrite_cache()` - Saves rewrite cache.</li>
+</ul>
+<h4>services/scraper-python/app/ai/category_judge.py</h4>
+<p>Purpose: Ambiguous-category review logic.</p>
+<p>Contains: Decides when the AI model should be asked to confirm or relabel uncertain category assignments.</p>
+<ul>
+<li>`_should_judge()` - Decides whether udge should happen.</li>
+<li>`judge_ambiguous_category()` - Implements judge ambiguous category in the AI layer.</li>
+</ul>
+<h4>services/scraper-python/app/ai/config.py</h4>
+<p>Purpose: AI feature flags and mode settings.</p>
+<p>Contains: Reads env flags that control whether AI is off, shadow-only, or assist mode.</p>
+<ul>
+<li>`_env_flag()` - Implements env flag in the AI layer.</li>
+<li>`_env_mode()` - Implements env mode in the AI layer.</li>
+<li>`ai_is_active()` - Implements ai is active in the AI layer.</li>
+<li>`ai_is_assist_mode()` - Implements ai is assist mode in the AI layer.</li>
+<li>`ai_pipeline_is_enabled()` - Implements ai pipeline is enabled in the AI layer.</li>
+</ul>
+<h4>services/scraper-python/app/ai/logging.py</h4>
+<p>Purpose: Persistence helpers for AI runs.</p>
+<p>Contains: Records start/end metadata for model invocations in the database.</p>
+<ul>
+<li>`_get_connection()` - Returns connection.</li>
+<li>`start_ai_run()` - Implements start ai run in the AI layer.</li>
+<li>`finish_ai_run()` - Implements finish ai run in the AI layer.</li>
+</ul>
+<h4>services/scraper-python/app/ai/model_manager.py</h4>
+<p>Purpose: Ollama model runtime wrapper.</p>
+<p>Contains: Loads the configured model, checks availability, and sends generation requests.</p>
+<ul>
+<li>`ModelUnavailableError` - Data/error/schema class declared by this file.</li>
+<li>`OllamaModelManager` - Main class/object for this file.</li>
+<li>`OllamaModelManager.__init__()` - Initializes the object and wires in its dependencies/configuration.</li>
+<li>`OllamaModelManager.status()` - Returns the current status for this object or integration.</li>
+<li>`OllamaModelManager.ensure_loaded()` - Ensures loaded is ready before the flow continues.</li>
+<li>`OllamaModelManager.generate()` - Performs the main generation step for this component.</li>
+</ul>
+<h4>services/scraper-python/app/ai/prompts.py</h4>
+<p>Purpose: Prompt builders for AI tasks.</p>
+<p>Contains: Creates the exact prompt strings for rewrite generation and category judgment.</p>
+<ul>
+<li>`build_rewrite_prompt()` - Builds rewrite prompt.</li>
+<li>`build_category_judge_prompt()` - Builds category judge prompt.</li>
+</ul>
+<h4>services/scraper-python/app/ai/rewrite_service.py</h4>
+<p>Purpose: Query rewrite service entry point.</p>
+<p>Contains: Executes the model-driven rewrite flow and returns normalized rewrite plans.</p>
+<ul>
+<li>`generate_rewrite_plan()` - Implements generate rewrite plan in the AI layer.</li>
+</ul>
+<h4>services/scraper-python/app/ai/schemas.py</h4>
+<p>Purpose: AI schema parsing/serialization helpers.</p>
+<p>Contains: Defines dataclasses and parsing logic for strict JSON contracts returned by the model.</p>
+<ul>
+<li>`_extract_json_fragment()` - Extracts json fragment.</li>
+<li>`_normalize_terms()` - Normalizes terms.</li>
+<li>`parse_rewrite_plan()` - Parses rewrite plan.</li>
+<li>`parse_category_judgment()` - Parses category judgment.</li>
+<li>`rewrite_plan_to_json()` - Implements rewrite plan to json in the AI layer.</li>
+<li>`category_judgment_to_json()` - Implements category judgment to json in the AI layer.</li>
+<li>`AIParseError` - Data/error/schema class declared by this file.</li>
+<li>`RewriteCandidate` - Data/error/schema class declared by this file.</li>
+<li>`RewritePlan` - Data/error/schema class declared by this file.</li>
+<li>`CategoryJudgment` - Data/error/schema class declared by this file.</li>
+</ul>
+<h3>services/scraper-python/app/discovery</h3>
+<p>Live web discovery integrations, normalization, ranking, caching, and schema objects.</p>
+<h4>services/scraper-python/app/discovery/__init__.py</h4>
+<p>Purpose: Package marker for discovery helpers.</p>
+<p>Contains: Makes the discovery subpackage importable.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/discovery/apify_client.py</h4>
+<p>Purpose: Apify integration client.</p>
+<p>Contains: Builds Apify requests, reads actor datasets, and converts them into internal search results.</p>
+<ul>
+<li>`_sanitize_query()` - Implements sanitize query in the discovery layer.</li>
+<li>`_build_request_payload()` - Builds request payload.</li>
+<li>`ApifyClient` - Main class/object for this file.</li>
+<li>`ApifyClient._request_dataset_items()` - Implements request dataset items in the discovery layer.</li>
+<li>`ApifyClient.health()` - Reports whether the underlying integration/service is healthy.</li>
+<li>`ApifyClient.search()` - Runs the main search flow for this component.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/apify_schemas.py</h4>
+<p>Purpose: Apify result schema objects.</p>
+<p>Contains: Defines typed containers for Apify query and search results.</p>
+<ul>
+<li>`ApifyQueryResult` - Main class/object for this file.</li>
+<li>`ApifyQueryResult.to_json()` - Serializes the object into a JSON-ready shape.</li>
+<li>`ApifySearchResult` - Main class/object for this file.</li>
+<li>`ApifySearchResult.to_json()` - Serializes the object into a JSON-ready shape.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/cache.py</h4>
+<p>Purpose: Discovery cache helpers.</p>
+<p>Contains: Stores and retrieves discovery responses so repeated live lookups can be reused.</p>
+<ul>
+<li>`build_discovery_cache_key()` - Builds discovery cache key.</li>
+<li>`get_cached_discovery()` - Returns cached discovery.</li>
+<li>`save_discovery_cache()` - Saves discovery cache.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/config.py</h4>
+<p>Purpose: Discovery configuration and feature gating.</p>
+<p>Contains: Reads env flags for Apify/SearXNG behavior, allowlists, budgets, and activation status.</p>
+<ul>
+<li>`_dotenv_path()` - Implements dotenv path in the discovery layer.</li>
+<li>`_env_flag()` - Implements env flag in the discovery layer.</li>
+<li>`_env_csv()` - Implements env csv in the discovery layer.</li>
+<li>`_first_env()` - Implements first env in the discovery layer.</li>
+<li>`apify_configuration_error()` - Implements apify configuration error in the discovery layer.</li>
+<li>`apify_is_active()` - Implements apify is active in the discovery layer.</li>
+<li>`discovery_is_active()` - Implements discovery is active in the discovery layer.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/normalization.py</h4>
+<p>Purpose: Discovery result normalization rules.</p>
+<p>Contains: Cleans domains/URLs, filters noise, and converts raw discovery entries into internal candidates.</p>
+<ul>
+<li>`normalize_domain()` - Normalizes domain.</li>
+<li>`domain_from_url()` - Implements domain from url in the discovery layer.</li>
+<li>`provider_for_url()` - Implements provider for url in the discovery layer.</li>
+<li>`is_noise_domain()` - Checks whether noise domain.</li>
+<li>`is_allowed_url()` - Checks whether allowed url.</li>
+<li>`normalize_result()` - Normalizes result.</li>
+<li>`normalize_apify_entry()` - Normalizes apify entry.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/ranking.py</h4>
+<p>Purpose: Discovery ranking logic.</p>
+<p>Contains: Scores and orders discovery hits before provider extraction runs.</p>
+<ul>
+<li>`_token_set()` - Implements token set in the discovery layer.</li>
+<li>`_category_conflicts()` - Implements category conflicts in the discovery layer.</li>
+<li>`score_hit()` - Calculates a score for hit.</li>
+<li>`rank_hits()` - Ranks hits by relevance or score.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/schemas.py</h4>
+<p>Purpose: Core discovery schema objects.</p>
+<p>Contains: Defines typed containers for normalized discovery hits and query results.</p>
+<ul>
+<li>`DiscoveryHit` - Main class/object for this file.</li>
+<li>`DiscoveryHit.to_json()` - Serializes the object into a JSON-ready shape.</li>
+<li>`DiscoveryQueryResult` - Main class/object for this file.</li>
+<li>`DiscoveryQueryResult.to_json()` - Serializes the object into a JSON-ready shape.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/searxng_client.py</h4>
+<p>Purpose: Legacy/optional SearXNG client.</p>
+<p>Contains: Calls a SearXNG instance and converts its results into the internal discovery shape.</p>
+<ul>
+<li>`_sanitize_query()` - Implements sanitize query in the discovery layer.</li>
+<li>`SearXNGClient` - Main class/object for this file.</li>
+<li>`SearXNGClient._request_search_payload()` - Implements request search payload in the discovery layer.</li>
+<li>`SearXNGClient.health()` - Reports whether the underlying integration/service is healthy.</li>
+<li>`SearXNGClient.search()` - Runs the main search flow for this component.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/searxng_expansion.py</h4>
+<p>Purpose: Seed-generation logic for discovery queries.</p>
+<p>Contains: Builds cleaner search seeds and related-product expansion queries from titles and families.</p>
+<ul>
+<li>`_field()` - Implements field in the discovery layer.</li>
+<li>`retailer_for_domain()` - Implements retailer for domain in the discovery layer.</li>
+<li>`is_noise_domain()` - Checks whether noise domain.</li>
+<li>`_is_seed_candidate()` - Checks whether seed candidate.</li>
+<li>`clean_seed_title()` - Implements clean seed title in the discovery layer.</li>
+<li>`dedupe_seed_queries()` - Implements dedupe seed queries in the discovery layer.</li>
+<li>`_family_tokens()` - Implements family tokens in the discovery layer.</li>
+<li>`build_search_seed_queries()` - Builds search seed queries.</li>
+<li>`build_related_seed_queries()` - Builds related seed queries.</li>
+<li>`build_related_family_query()` - Builds related family query.</li>
+</ul>
+<h4>services/scraper-python/app/discovery/searxng_schemas.py</h4>
+<p>Purpose: SearXNG schema objects.</p>
+<p>Contains: Defines typed containers for raw and normalized SearXNG results.</p>
+<ul>
+<li>`SearXNGQueryResult` - Main class/object for this file.</li>
+<li>`SearXNGQueryResult.to_json()` - Serializes the object into a JSON-ready shape.</li>
+<li>`SearXNGSearchResult` - Main class/object for this file.</li>
+<li>`SearXNGSearchResult.to_json()` - Serializes the object into a JSON-ready shape.</li>
+</ul>
+<h3>services/scraper-python/app/parsers</h3>
+<p>HTML parsing helpers for retailer pages.</p>
+<h4>services/scraper-python/app/parsers/__init__.py</h4>
+<p>Purpose: Package marker for parser helpers.</p>
+<p>Contains: Makes the parsers subpackage importable.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/parsers/amazon_bs4.py</h4>
+<p>Purpose: Amazon HTML parser.</p>
+<p>Contains: Extracts search results and product detail data from Amazon HTML using BeautifulSoup.</p>
+<ul>
+<li>`parse_search_results()` - Parses search results.</li>
+<li>`parse_detail()` - Parses detail.</li>
+</ul>
+<h4>services/scraper-python/app/parsers/common.py</h4>
+<p>Purpose: Shared parser helper library.</p>
+<p>Contains: Provides soup creation, image extraction, model construction, and text/rating parsing helpers.</p>
+<ul>
+<li>`soup_for()` - Implements soup for in the module.</li>
+<li>`_dedupe_urls()` - Implements dedupe urls in the module.</li>
+<li>`pick_image_urls()` - Selects  image urls from available options.</li>
+<li>`pick_image_url()` - Selects  image url from available options.</li>
+<li>`build_product()` - Builds product.</li>
+<li>`build_review()` - Builds review.</li>
+<li>`rating_from_text()` - Implements rating from text in the module.</li>
+<li>`review_count_from_text()` - Implements review count from text in the module.</li>
+</ul>
+<h3>services/scraper-python/app/providers</h3>
+<p>Retailer-specific search/detail providers and shared HTTP utilities.</p>
+<h4>services/scraper-python/app/providers/__init__.py</h4>
+<p>Purpose: Package marker for providers.</p>
+<p>Contains: Makes retailer providers importable as a group.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/providers/amazon_playwright.py</h4>
+<p>Purpose: Amazon provider using Playwright.</p>
+<p>Contains: Searches Amazon through browser automation and enriches product details when scripted browsing is required.</p>
+<ul>
+<li>`AmazonPlaywrightProvider` - Main class/object for this file.</li>
+<li>`AmazonPlaywrightProvider.supports_url()` - Checks whether this component can handle a given URL.</li>
+<li>`AmazonPlaywrightProvider._fetch_html()` - Implements fetch html in the provider layer.</li>
+<li>`AmazonPlaywrightProvider.search()` - Runs the main search flow for this component.</li>
+<li>`AmazonPlaywrightProvider.search_by_urls()` - Processes an explicit set of URLs instead of starting from a plain-text query.</li>
+<li>`AmazonPlaywrightProvider.enrich_product()` - Fetches additional detail for a product that was already discovered.</li>
+</ul>
+<h4>services/scraper-python/app/providers/amazon_requests.py</h4>
+<p>Purpose: Amazon provider using direct HTTP requests.</p>
+<p>Contains: Searches Amazon and enriches products without browser automation when possible.</p>
+<ul>
+<li>`AmazonRequestsProvider` - Main class/object for this file.</li>
+<li>`AmazonRequestsProvider.supports_url()` - Checks whether this component can handle a given URL.</li>
+<li>`AmazonRequestsProvider.search()` - Runs the main search flow for this component.</li>
+<li>`AmazonRequestsProvider.search_by_urls()` - Processes an explicit set of URLs instead of starting from a plain-text query.</li>
+<li>`AmazonRequestsProvider.enrich_product()` - Fetches additional detail for a product that was already discovered.</li>
+</ul>
+<h4>services/scraper-python/app/providers/base.py</h4>
+<p>Purpose: Shared provider models and interface.</p>
+<p>Contains: Defines provider dataclasses and the abstract contract all retailer providers follow.</p>
+<ul>
+<li>`ProviderReview` - Data/error/schema class declared by this file.</li>
+<li>`ProviderProduct` - Data/error/schema class declared by this file.</li>
+<li>`ProviderSearchResult` - Data/error/schema class declared by this file.</li>
+<li>`BaseProvider` - Main class/object for this file.</li>
+<li>`BaseProvider.search()` - Runs the main search flow for this component.</li>
+<li>`BaseProvider.supports_url()` - Checks whether this component can handle a given URL.</li>
+<li>`BaseProvider.search_by_urls()` - Processes an explicit set of URLs instead of starting from a plain-text query.</li>
+<li>`BaseProvider.enrich_product()` - Fetches additional detail for a product that was already discovered.</li>
+</ul>
+<h4>services/scraper-python/app/providers/http.py</h4>
+<p>Purpose: Shared HTTP utility layer for providers.</p>
+<p>Contains: Creates resilient clients/headers and provides fetch helpers with proxy and fallback behavior.</p>
+<ul>
+<li>`build_client()` - Builds client.</li>
+<li>`build_headers()` - Builds headers.</li>
+<li>`_fetch_text_via_httpx()` - Implements fetch text via httpx in the provider layer.</li>
+<li>`fetch_text_via_urllib()` - Implements fetch text via urllib in the provider layer.</li>
+<li>`fetch_text_resilient()` - Implements fetch text resilient in the provider layer.</li>
+</ul>
+<h4>services/scraper-python/app/providers/target_requests.py</h4>
+<p>Purpose: Target provider using direct HTTP requests.</p>
+<p>Contains: Parses Target search/detail responses, builds product objects, and fetches review data.</p>
+<ul>
+<li>`_clean_target_text()` - Implements clean target text in the provider layer.</li>
+<li>`_extract_target_data()` - Extracts target data.</li>
+<li>`_extract_api_key()` - Extracts api key.</li>
+<li>`_fallback_page_path()` - Implements fallback page path in the provider layer.</li>
+<li>`_extract_search_context()` - Extracts search context.</li>
+<li>`_find_search_response()` - Implements find search response in the provider layer.</li>
+<li>`_pick_image_url()` - Implements pick image url in the provider layer.</li>
+<li>`_extract_image_urls()` - Extracts image urls.</li>
+<li>`_product_description_text()` - Implements product description text in the provider layer.</li>
+<li>`_review_count()` - Implements review count in the provider layer.</li>
+<li>`_build_target_product()` - Builds target product.</li>
+<li>`_parse_products()` - Parses products.</li>
+<li>`_find_detail_product()` - Implements find detail product in the provider layer.</li>
+<li>`_build_reviews()` - Builds reviews.</li>
+<li>`_parse_detail()` - Parses detail.</li>
+<li>`TargetRequestsProvider` - Main class/object for this file.</li>
+<li>`TargetRequestsProvider.__init__()` - Initializes the object and wires in its dependencies/configuration.</li>
+<li>`TargetRequestsProvider._fetch_search_html()` - Implements fetch search html in the provider layer.</li>
+<li>`TargetRequestsProvider._fetch_product_html()` - Implements fetch product html in the provider layer.</li>
+<li>`TargetRequestsProvider.supports_url()` - Checks whether this component can handle a given URL.</li>
+<li>`TargetRequestsProvider.search()` - Runs the main search flow for this component.</li>
+<li>`TargetRequestsProvider.enrich_product()` - Fetches additional detail for a product that was already discovered.</li>
+<li>`TargetRequestsProvider.search_by_urls()` - Processes an explicit set of URLs instead of starting from a plain-text query.</li>
+</ul>
+<h4>services/scraper-python/app/providers/walmart_requests.py</h4>
+<p>Purpose: Walmart provider using direct HTTP requests.</p>
+<p>Contains: Parses Walmart search/detail payloads and converts them into normalized products.</p>
+<ul>
+<li>`_extract_next_data()` - Extracts next data.</li>
+<li>`_pick_image()` - Implements pick image in the provider layer.</li>
+<li>`_extract_images()` - Extracts images.</li>
+<li>`_parse_search()` - Parses search.</li>
+<li>`_extract_item_id()` - Extracts item id.</li>
+<li>`_parse_detail()` - Parses detail.</li>
+<li>`WalmartRequestsProvider` - Main class/object for this file.</li>
+<li>`WalmartRequestsProvider.supports_url()` - Checks whether this component can handle a given URL.</li>
+<li>`WalmartRequestsProvider.search()` - Runs the main search flow for this component.</li>
+<li>`WalmartRequestsProvider.search_by_urls()` - Processes an explicit set of URLs instead of starting from a plain-text query.</li>
+<li>`WalmartRequestsProvider.enrich_product()` - Fetches additional detail for a product that was already discovered.</li>
+</ul>
+<h3>services/scraper-python/app/storage</h3>
+<p>Database, image cache, schema, and Postgres compatibility logic.</p>
+<h4>services/scraper-python/app/storage/__init__.py</h4>
+<p>Purpose: Package marker for storage helpers.</p>
+<p>Contains: Makes storage modules importable.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/storage/db.py</h4>
+<p>Purpose: Main persistence and business-rule layer.</p>
+<p>Contains: Creates and migrates schema, upserts products, powers catalog/search/detail/related/favorites/history/recommendations flows, and maintains caches/repair jobs.</p>
+<ul>
+<li>`get_connection()` - Returns connection.</li>
+<li>`_is_locked_error()` - Checks whether locked error.</li>
+<li>`_write_connection()` - Implements write connection in the storage layer.</li>
+<li>`initialize_database()` - Implements initialize database in the storage layer.</li>
+<li>`_purge_products_by_ids()` - Implements purge products by ids in the storage layer.</li>
+<li>`_purge_products_without_images()` - Implements purge products without images in the storage layer.</li>
+<li>`_invalidate_related_derived_caches()` - Implements invalidate related derived caches in the storage layer.</li>
+<li>`_clear_image_cache_dir()` - Clears image cache dir.</li>
+<li>`_count_table_rows()` - Counts table rows.</li>
+<li>`reset_product_linked_state()` - Implements reset product linked state in the storage layer.</li>
+<li>`_table_columns()` - Implements table columns in the storage layer.</li>
+<li>`_ensure_postgres_schema_migrations()` - Ensures postgres schema migrations is ready before the flow continues.</li>
+<li>`_ensure_schema_migrations()` - Ensures schema migrations is ready before the flow continues.</li>
+<li>`_reclassify_existing_products()` - Reclassifies existing products.</li>
+<li>`_populate_variant_metadata()` - Implements populate variant metadata in the storage layer.</li>
+<li>`_repair_invalid_product_pricing()` - Repairs invalid product pricing.</li>
+<li>`_repair_book_like_product_categories()` - Repairs book like product categories.</li>
+<li>`_now_datetime()` - Implements now datetime in the storage layer.</li>
+<li>`_parse_iso()` - Parses iso.</li>
+<li>`_decode_json_array()` - Decodes json array.</li>
+<li>`_normalize_lookup_key()` - Normalizes lookup key.</li>
+<li>`_dedupe_strings()` - Implements dedupe strings in the storage layer.</li>
+<li>`_merge_image_gallery_urls()` - Merges image gallery urls.</li>
+<li>`_decode_image_gallery()` - Decodes image gallery.</li>
+<li>`_has_any_image_urls()` - Checks whether any image urls is available.</li>
+<li>`_resolved_primary_image_url()` - Implements resolved primary image url in the storage layer.</li>
+<li>`_record_gallery_urls()` - Records gallery urls.</li>
+<li>`_record_has_any_image()` - Records has any image.</li>
+<li>`_row_has_any_image()` - Implements row has any image in the storage layer.</li>
+<li>`_filter_rows_with_images()` - Filters rows with images.</li>
+<li>`_find_nested_value()` - Implements find nested value in the storage layer.</li>
+<li>`_extract_variant_attributes()` - Extracts variant attributes.</li>
+<li>`_build_variant_label()` - Builds variant label.</li>
+<li>`_build_family_key()` - Builds family key.</li>
+<li>`_row_identity_key()` - Implements row identity key in the storage layer.</li>
+<li>`_row_sort_key()` - Implements row sort key in the storage layer.</li>
+<li>`_dedupe_rows()` - Implements dedupe rows in the storage layer.</li>
+<li>`_product_identity_key()` - Implements product identity key in the storage layer.</li>
+<li>`_product_sort_key()` - Implements product sort key in the storage layer.</li>
+<li>`_dedupe_product_list()` - Implements dedupe product list in the storage layer.</li>
+<li>`_classification_debug_payload()` - Implements classification debug payload in the storage layer.</li>
+<li>`_candidate_looks_like_book()` - Implements candidate looks like book in the storage layer.</li>
+<li>`_product_to_row()` - Implements product to row in the storage layer.</li>
+<li>`_fallback_image_meta()` - Implements fallback image meta in the storage layer.</li>
+<li>`_runtime_image_path()` - Implements runtime image path in the storage layer.</li>
+<li>`_row_to_product()` - Implements row to product in the storage layer.</li>
+<li>`_decode_json_object()` - Decodes json object.</li>
+<li>`_snapshot_from_product()` - Implements snapshot from product in the storage layer.</li>
+<li>`_snapshot_from_row()` - Implements snapshot from row in the storage layer.</li>
+<li>`_restore_snapshot()` - Implements restore snapshot in the storage layer.</li>
+<li>`prepare_product_candidates()` - Prepares product candidates for the next step.</li>
+<li>`rank_product_candidates_for_query()` - Ranks product candidates for query by relevance or score.</li>
+<li>`resolve_batch_category()` - Resolves batch category.</li>
+<li>`_apply_batch_category_to_candidate()` - Implements apply batch category to candidate in the storage layer.</li>
+<li>`apply_batch_category_to_candidates()` - Implements apply batch category to candidates in the storage layer.</li>
+<li>`_purge_existing_products_by_canonical_urls()` - Implements purge existing products by canonical urls in the storage layer.</li>
+<li>`_preserve_existing_category_fields()` - Implements preserve existing category fields in the storage layer.</li>
+<li>`_apply_existing_category_precedence()` - Implements apply existing category precedence in the storage layer.</li>
+<li>`upsert_prepared_product_candidates()` - Implements upsert prepared product candidates in the storage layer.</li>
+<li>`favorite_product_ids_for_user()` - Implements favorite product ids for user in the storage layer.</li>
+<li>`annotate_products_with_favorites()` - Implements annotate products with favorites in the storage layer.</li>
+<li>`_build_categories()` - Builds categories.</li>
+<li>`_offer_snapshot_period_key()` - Implements offer snapshot period key in the storage layer.</li>
+<li>`_discount_percentage_from_row()` - Implements discount percentage from row in the storage layer.</li>
+<li>`_offer_recency_score()` - Implements offer recency score in the storage layer.</li>
+<li>`_offer_daily_bias()` - Implements offer daily bias in the storage layer.</li>
+<li>`_offer_snapshot_expiry()` - Implements offer snapshot expiry in the storage layer.</li>
+<li>`_discounted_product_rows()` - Implements discounted product rows in the storage layer.</li>
+<li>`_load_featured_offer_rows_from_ids()` - Loads featured offer rows from ids.</li>
+<li>`_generate_featured_offer_product_ids()` - Implements generate featured offer product ids in the storage layer.</li>
+<li>`_store_featured_offer_snapshot()` - Implements store featured offer snapshot in the storage layer.</li>
+<li>`_build_offers()` - Builds offers.</li>
+<li>`_interleaved_products()` - Implements interleaved products in the storage layer.</li>
+<li>`_catalog_response()` - Implements catalog response in the storage layer.</li>
+<li>`upsert_products()` - Implements upsert products in the storage layer.</li>
+<li>`replace_reviews()` - Implements replace reviews in the storage layer.</li>
+<li>`_generate_collection_code()` - Implements generate collection code in the storage layer.</li>
+<li>`_resolve_collection_group_category_id()` - Resolves collection group category id.</li>
+<li>`_assign_primary_collection_code()` - Implements assign primary collection code in the storage layer.</li>
+<li>`_store_collection_group_page()` - Implements store collection group page in the storage layer.</li>
+<li>`_next_append_positions()` - Implements next append positions in the storage layer.</li>
+<li>`save_query_results()` - Saves query results.</li>
+<li>`append_query_results()` - Implements append query results in the storage layer.</li>
+<li>`clear_query_results()` - Clears query results.</li>
+<li>`set_query_status()` - Implements set query status in the storage layer.</li>
+<li>`get_query_metadata()` - Returns query metadata.</li>
+<li>`cache_discovery_response()` - Implements cache discovery response in the storage layer.</li>
+<li>`get_cached_discovery_response()` - Returns cached discovery response.</li>
+<li>`store_discovery_hits()` - Implements store discovery hits in the storage layer.</li>
+<li>`list_discovery_hits()` - Lists discovery hits.</li>
+<li>`mark_discovery_failure()` - Implements mark discovery failure in the storage layer.</li>
+<li>`get_suppressed_discovery_urls()` - Returns suppressed discovery urls.</li>
+<li>`count_query_results()` - Counts query results.</li>
+<li>`count_products()` - Counts products.</li>
+<li>`category_counts()` - Implements category counts in the storage layer.</li>
+<li>`list_active_product_ids()` - Lists active product ids.</li>
+<li>`has_bootstrap_coverage()` - Checks whether bootstrap coverage is available.</li>
+<li>`list_products()` - Lists products.</li>
+<li>`list_query_products()` - Lists query products.</li>
+<li>`_search_record_tags()` - Implements search record tags in the storage layer.</li>
+<li>`_build_search_haystack_parts()` - Builds search haystack parts.</li>
+<li>`_build_search_token_set()` - Builds search token set.</li>
+<li>`_matches_phrase_or_token()` - Implements matches phrase or token in the storage layer.</li>
+<li>`_record_value()` - Records value.</li>
+<li>`_related_record_tags()` - Implements related record tags in the storage layer.</li>
+<li>`_build_related_token_set()` - Builds related token set.</li>
+<li>`_related_overlap_metrics()` - Implements related overlap metrics in the storage layer.</li>
+<li>`_related_candidate_passes_threshold()` - Implements related candidate passes threshold in the storage layer.</li>
+<li>`filter_related_product_candidates()` - Filters related product candidates.</li>
+<li>`_general_related_search_query()` - Implements general related search query in the storage layer.</li>
+<li>`_related_search_queries()` - Implements related search queries in the storage layer.</li>
+<li>`_keyword_terms()` - Implements keyword terms in the storage layer.</li>
+<li>`_keyword_term_is_meaningful()` - Implements keyword term is meaningful in the storage layer.</li>
+<li>`_compressed_keyword_terms()` - Implements compressed keyword terms in the storage layer.</li>
+<li>`_append_unique_keyword()` - Implements append unique keyword in the storage layer.</li>
+<li>`_join_keyword_terms()` - Implements join keyword terms in the storage layer.</li>
+<li>`extract_product_keywords()` - Extracts product keywords.</li>
+<li>`_related_fulltext_query_text()` - Implements related fulltext query text in the storage layer.</li>
+<li>`_search_products_by_keyword_for_related()` - Implements search products by keyword for related in the storage layer.</li>
+<li>`_fulltext_search_related_rows()` - Implements fulltext search related rows in the storage layer.</li>
+<li>`_candidate_title_keyword_hit_count()` - Implements candidate title keyword hit count in the storage layer.</li>
+<li>`_price_similarity_bonus()` - Implements price similarity bonus in the storage layer.</li>
+<li>`_score_related_candidate()` - Calculates a score for related candidate.</li>
+<li>`_compute_related_scores()` - Implements compute related scores in the storage layer.</li>
+<li>`find_related_products_hybrid()` - Implements find related products hybrid in the storage layer.</li>
+<li>`_collection_group_related_candidates()` - Implements collection group related candidates in the storage layer.</li>
+<li>`_shared_query_count_lookup()` - Implements shared query count lookup in the storage layer.</li>
+<li>`_query_specific_adjustment()` - Implements query specific adjustment in the storage layer.</li>
+<li>`_normalize_search_score()` - Normalizes search score.</li>
+<li>`search_cached_products()` - Implements search cached products in the storage layer.</li>
+<li>`rank_product_ids_for_query()` - Ranks product ids for query by relevance or score.</li>
+<li>`get_product()` - Returns product.</li>
+<li>`get_source_image_url()` - Returns source image url.</li>
+<li>`get_related_products()` - Returns related products.</li>
+<li>`_variant_summary_from_row()` - Implements variant summary from row in the storage layer.</li>
+<li>`get_product_with_reviews()` - Returns product with reviews.</li>
+<li>`_normalize_email()` - Normalizes email.</li>
+<li>`_password_hash()` - Implements password hash in the storage layer.</li>
+<li>`_hash_token()` - Implements hash token in the storage layer.</li>
+<li>`_session_expiry()` - Implements session expiry in the storage layer.</li>
+<li>`_supabase_auth_enabled()` - Implements supabase auth enabled in the storage layer.</li>
+<li>`_supabase_request()` - Implements supabase request in the storage layer.</li>
+<li>`_decode_token_claims()` - Decodes token claims.</li>
+<li>`_upsert_profile_for_supabase_user()` - Implements upsert profile for supabase user in the storage layer.</li>
+<li>`_public_user_payload()` - Implements public user payload in the storage layer.</li>
+<li>`create_user()` - Implements create user in the storage layer.</li>
+<li>`authenticate_user()` - Implements authenticate user in the storage layer.</li>
+<li>`get_auth_context_by_token()` - Returns auth context by token.</li>
+<li>`get_user_by_token()` - Returns user by token.</li>
+<li>`get_user_id_by_token()` - Returns user id by token.</li>
+<li>`logout_user()` - Implements logout user in the storage layer.</li>
+<li>`_decayed_score()` - Implements decayed score in the storage layer.</li>
+<li>`_bump_affinity()` - Implements bump affinity in the storage layer.</li>
+<li>`get_top_interests()` - Returns top interests.</li>
+<li>`_event_filter_clause()` - Implements event filter clause in the storage layer.</li>
+<li>`_dominant_category_id()` - Implements dominant category id in the storage layer.</li>
+<li>`_build_event_affinities()` - Builds event affinities.</li>
+<li>`_build_favorite_affinities()` - Builds favorite affinities.</li>
+<li>`_favorite_signal_strength()` - Implements favorite signal strength in the storage layer.</li>
+<li>`_build_history_trending_products()` - Builds history trending products.</li>
+<li>`record_user_event()` - Records user event.</li>
+<li>`invalidate_user_recommendations()` - Implements invalidate user recommendations in the storage layer.</li>
+<li>`add_user_favorite()` - Implements add user favorite in the storage layer.</li>
+<li>`remove_user_favorite()` - Implements remove user favorite in the storage layer.</li>
+<li>`get_user_favorite()` - Returns user favorite.</li>
+<li>`list_user_favorites()` - Lists user favorites.</li>
+<li>`refresh_user_recommendations()` - Implements refresh user recommendations in the storage layer.</li>
+<li>`list_user_recommendations()` - Lists user recommendations.</li>
+<li>`list_user_history()` - Lists user history.</li>
+</ul>
+<h4>services/scraper-python/app/storage/images.py</h4>
+<p>Purpose: Image cache manager.</p>
+<p>Contains: Downloads product images, validates them, stores them locally, and resolves cached image paths.</p>
+<ul>
+<li>`prepare_image_cache_dir()` - Prepares image cache dir for the next step.</li>
+<li>`_extension_for_format()` - Implements extension for format in the module.</li>
+<li>`_extension_for_content_type()` - Implements extension for content type in the module.</li>
+<li>`cache_image()` - Implements cache image in the module.</li>
+<li>`resolve_image_path()` - Resolves image path.</li>
+</ul>
+<h4>services/scraper-python/app/storage/postgres_compat.py</h4>
+<p>Purpose: SQLite-to-Postgres compatibility adapter.</p>
+<p>Contains: Lets the codebase keep a mostly SQLite-shaped query style while running against Supabase Postgres.</p>
+<ul>
+<li>`postgres_enabled()` - Implements postgres enabled in the module.</li>
+<li>`_replace_placeholders()` - Implements replace placeholders in the module.</li>
+<li>`_replace_named_placeholders()` - Implements replace named placeholders in the module.</li>
+<li>`_escape_literal_percents()` - Implements escape literal percents in the module.</li>
+<li>`_rewrite_insert_or_replace()` - Implements rewrite insert or replace in the module.</li>
+<li>`translate_sql()` - Implements translate sql in the module.</li>
+<li>`_reset_connection()` - Implements reset connection in the module.</li>
+<li>`_connection_is_unusable()` - Implements connection is unusable in the module.</li>
+<li>`_ensure_connection()` - Ensures connection is ready before the flow continues.</li>
+<li>`get_connection()` - Returns connection.</li>
+<li>`BufferedResult` - Main class/object for this file.</li>
+<li>`BufferedResult.__init__()` - Initializes the object and wires in its dependencies/configuration.</li>
+<li>`BufferedResult.fetchone()` - Implements fetchone in the module.</li>
+<li>`BufferedResult.fetchall()` - Implements fetchall in the module.</li>
+<li>`PostgresConnectionWrapper` - Main class/object for this file.</li>
+<li>`PostgresConnectionWrapper.__init__()` - Initializes the object and wires in its dependencies/configuration.</li>
+<li>`PostgresConnectionWrapper.execute()` - Implements execute in the module.</li>
+<li>`PostgresConnectionWrapper.executescript()` - Implements executescript in the module.</li>
+<li>`PostgresConnectionWrapper.commit()` - Implements commit in the module.</li>
+<li>`PostgresConnectionWrapper.rollback()` - Implements rollback in the module.</li>
+</ul>
+<h4>services/scraper-python/app/storage/postgres_schema.sql</h4>
+<p>Purpose: Postgres schema definition.</p>
+<p>Contains: Creates the tables and indexes used when the backend runs on Supabase/Postgres.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/app/storage/schema.sql</h4>
+<p>Purpose: SQLite schema definition.</p>
+<p>Contains: Creates the local development/test database structure.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>services/scraper-python/data</h3>
+<p>Placeholder directory for local Python service data files.</p>
+<h4>services/scraper-python/data/.gitkeep</h4>
+<p>Purpose: Placeholder file for the Python data directory.</p>
+<p>Contains: Keeps the otherwise-empty data folder in version control.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>services/scraper-python/scripts</h3>
+<p>Maintenance and migration scripts for SQLite, Supabase, catalog reset, and recovery actions.</p>
+<h4>services/scraper-python/scripts/_supabase_utils.py</h4>
+<p>Purpose: Shared helpers for Supabase migration scripts.</p>
+<p>Contains: Provides env handling, Postgres connections, SQL execution, JSON normalization, and admin API requests.</p>
+<ul>
+<li>`env_value()` - Implements env value in the module.</li>
+<li>`connect_postgres()` - Implements connect postgres in the module.</li>
+<li>`execute_sql_script()` - Implements execute sql script in the module.</li>
+<li>`json_ready()` - Implements json ready in the module.</li>
+<li>`supabase_admin_request()` - Implements supabase admin request in the module.</li>
+</ul>
+<h4>services/scraper-python/scripts/audit_sqlite_for_supabase.py</h4>
+<p>Purpose: SQLite audit/export tool.</p>
+<p>Contains: Inspects the local SQLite database and produces migration-audit outputs for a Supabase move.</p>
+<ul>
+<li>`parse_args()` - Parses args.</li>
+<li>`sqlite_tables()` - Implements sqlite tables in the module.</li>
+<li>`write_json()` - Implements write json in the module.</li>
+<li>`write_jsonl()` - Implements write jsonl in the module.</li>
+<li>`build_schema_summary()` - Builds schema summary.</li>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h4>services/scraper-python/scripts/check_supabase_connection.py</h4>
+<p>Purpose: Supabase connectivity smoke test.</p>
+<p>Contains: Verifies that the configured Postgres/Supabase connection is working.</p>
+<ul>
+<li>`parse_args()` - Parses args.</li>
+<li>`check_http()` - Implements check http in the module.</li>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h4>services/scraper-python/scripts/export_ai_training_jsonl.py</h4>
+<p>Purpose: AI-training export tool.</p>
+<p>Contains: Exports project data into JSONL suitable for AI evaluation or fine-tuning workflows.</p>
+<ul>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h4>services/scraper-python/scripts/migrate_sqlite_to_supabase.py</h4>
+<p>Purpose: SQLite-to-Supabase migration script.</p>
+<p>Contains: Copies local catalog/auth data into Supabase/Postgres and can trigger password recovery for migrated users.</p>
+<ul>
+<li>`parse_args()` - Parses args.</li>
+<li>`sqlite_connection()` - Implements sqlite connection in the module.</li>
+<li>`sqlite_rows()` - Implements sqlite rows in the module.</li>
+<li>`prepare_row()` - Prepares row for the next step.</li>
+<li>`build_exists_sql()` - Builds exists sql.</li>
+<li>`build_upsert_sql()` - Builds upsert sql.</li>
+<li>`existing_key_set()` - Implements existing key set in the module.</li>
+<li>`list_supabase_users()` - Lists supabase users.</li>
+<li>`ensure_supabase_user()` - Ensures supabase user is ready before the flow continues.</li>
+<li>`trigger_password_recovery()` - Implements trigger password recovery in the module.</li>
+<li>`migrate_profiles_and_auth()` - Implements migrate profiles and auth in the module.</li>
+<li>`migrate_table()` - Implements migrate table in the module.</li>
+<li>`apply_schema()` - Implements apply schema in the module.</li>
+<li>`default_report_path()` - Implements default report path in the module.</li>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h4>services/scraper-python/scripts/reset_catalog.py</h4>
+<p>Purpose: Offline catalog reset and reseed script.</p>
+<p>Contains: Deletes product-linked state, optionally reseeds the catalog baseline, and validates the resulting counts.</p>
+<ul>
+<li>`_health_ok()` - Implements health ok in the module.</li>
+<li>`_warn_if_runtime_active()` - Implements warn if runtime active in the module.</li>
+<li>`_build_parser()` - Builds parser.</li>
+<li>`_run()` - Implements run in the module.</li>
+<li>`_validate_thresholds()` - Validates thresholds.</li>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h4>services/scraper-python/scripts/trigger_supabase_password_resets.py</h4>
+<p>Purpose: Bulk recovery-email trigger.</p>
+<p>Contains: Sends Supabase password reset emails to migrated profile users.</p>
+<ul>
+<li>`parse_args()` - Parses args.</li>
+<li>`trigger_recovery()` - Implements trigger recovery in the module.</li>
+<li>`main()` - Implements main in the module.</li>
+</ul>
+<h3>services/scraper-python/tests</h3>
+<p>Automated test suite covering AI parsing, DB logic, discovery, and HTML parsers.</p>
+<h4>services/scraper-python/tests/test_ai.py</h4>
+<p>Purpose: AI test suite.</p>
+<p>Contains: Checks rewrite parsing, prompt contracts, category judgment behavior, and AI integration edge cases.</p>
+<ul>
+<li>`AITests` - Main class/object for this file.</li>
+<li>`AITests.setUp()` - Test helper used by this test module.</li>
+<li>`AITests.tearDown()` - Test helper used by this test module.</li>
+<li>`AITests._seed_product()` - Test helper used by this test module.</li>
+<li>`AITests.test_generate_rewrite_plan_uses_cache()` - Validates that generate rewrite plan uses cache.</li>
+<li>`AITests.test_search_pipeline_reports_ai_disabled()` - Validates that search pipeline reports ai disabled.</li>
+<li>`AITests.test_search_uses_retailer_variants_for_discovery_only()` - Validates that search uses retailer variants for discovery only.</li>
+<li>`AITests.test_category_judge_falls_back_on_model_error()` - Validates that category judge falls back on model error.</li>
+</ul>
+<h4>services/scraper-python/tests/test_db.py</h4>
+<p>Purpose: Database and catalog logic test suite.</p>
+<p>Contains: Exercises product persistence, category repair, related-product ranking, history, favorites, recommendations, resets, and many edge cases.</p>
+<ul>
+<li>`DatabaseTests` - Main class/object for this file.</li>
+<li>`DatabaseTests.setUp()` - Test helper used by this test module.</li>
+<li>`DatabaseTests.tearDown()` - Test helper used by this test module.</li>
+<li>`DatabaseTests._make_product()` - Test helper used by this test module.</li>
+<li>`DatabaseTests._image_meta()` - Test helper used by this test module.</li>
+<li>`DatabaseTests._prepare_candidates()` - Test helper used by this test module.</li>
+<li>`DatabaseTests._upsert()` - Test helper used by this test module.</li>
+<li>`DatabaseTests.test_upsert_and_list_products()` - Validates that upsert and list products.</li>
+<li>`DatabaseTests.test_upsert_persists_products_when_image_prefetch_fails()` - Validates that upsert persists products when image prefetch fails.</li>
+<li>`DatabaseTests.test_upsert_skips_products_without_any_image()` - Validates that upsert skips products without any image.</li>
+<li>`DatabaseTests.test_initialize_database_purges_existing_products_without_images()` - Validates that initialize database purges existing products without images.</li>
+<li>`DatabaseTests.test_extract_product_keywords_keeps_core_title_phrases()` - Validates that extract product keywords keeps core title phrases.</li>
+<li>`DatabaseTests.test_find_related_products_hybrid_limits_results_to_same_category()` - Validates that find related products hybrid limits results to same category.</li>
+<li>`DatabaseTests.test_postgres_related_fulltext_query_omits_null_category_parameter_clause()` - Validates that postgres related fulltext query omits null category parameter clause.</li>
+<li>`DatabaseTests.test_batch_requested_category_forces_all_ranked_candidates_into_same_category()` - Validates that batch requested category forces all ranked candidates into same category.</li>
+<li>`DatabaseTests.test_batch_resolution_uses_dominant_non_other_category_without_request()` - Validates that batch resolution uses dominant non other category without request.</li>
+<li>`DatabaseTests.test_batch_resolution_keeps_all_other_batches_in_others()` - Validates that batch resolution keeps all other batches in others.</li>
+<li>`DatabaseTests.test_ranked_batch_persistence_does_not_store_rejected_candidates()` - Validates that ranked batch persistence does not store rejected candidates.</li>
+<li>`DatabaseTests.test_upsert_prepared_candidates_does_not_downgrade_non_other_category()` - Validates that upsert prepared candidates does not downgrade non other category.</li>
+<li>`DatabaseTests.test_query_results_and_append_share_one_collection_code()` - Validates that query results and append share one collection code.</li>
+<li>`DatabaseTests.test_related_products_prioritize_same_collection_before_category_fallback()` - Validates that related products prioritize same collection before category fallback.</li>
+<li>`DatabaseTests.test_related_product_fallback_excludes_cross_category_matches()` - Validates that related product fallback excludes cross category matches.</li>
+<li>`DatabaseTests.test_reset_product_linked_state_preserves_users_sessions_and_search_history()` - Validates that reset product linked state preserves users sessions and search history.</li>
+<li>`DatabaseTests.test_initialize_database_clears_stale_related_caches_only()` - Validates that initialize database clears stale related caches only.</li>
+<li>`DatabaseTests.test_upsert_skips_zero_price_and_sanitizes_impossible_discounts()` - Validates that upsert skips zero price and sanitizes impossible discounts.</li>
+<li>`DatabaseTests.test_list_query_products_excludes_inactive_products()` - Validates that list query products excludes inactive products.</li>
+<li>`DatabaseTests.test_auth_events_and_recommendations()` - Validates that auth events and recommendations.</li>
+<li>`DatabaseTests.test_history_only_tracks_allowed_product_origins_and_dedupes()` - Validates that history only tracks allowed product origins and dedupes.</li>
+<li>`DatabaseTests.test_family_dedupe_keeps_retailers_distinct()` - Validates that family dedupe keeps retailers distinct.</li>
+<li>`DatabaseTests.test_product_detail_includes_gallery_and_variants()` - Validates that product detail includes gallery and variants.</li>
+<li>`DatabaseTests.test_favorites_drive_recommendations_before_history()` - Validates that favorites drive recommendations before history.</li>
+<li>`DatabaseTests.test_daily_featured_offers_are_cached_and_regenerated_for_inactive_products()` - Validates that daily featured offers are cached and regenerated for inactive products.</li>
+<li>`DatabaseTests.test_history_trending_products_follow_recent_activity()` - Validates that history trending products follow recent activity.</li>
+<li>`DatabaseTests.test_trending_products_are_empty_without_history_signal()` - Validates that trending products are empty without history signal.</li>
+<li>`DatabaseTests.test_cached_search_requires_real_text_or_category_evidence()` - Validates that cached search requires real text or category evidence.</li>
+<li>`DatabaseTests.test_history_can_be_scoped_to_app_session()` - Validates that history can be scoped to app session.</li>
+<li>`DatabaseTests.test_visible_history_excludes_source_and_category_events()` - Validates that visible history excludes source and category events.</li>
+<li>`DatabaseTests.test_session_scoped_recommendations_follow_current_login_interest()` - Validates that session scoped recommendations follow current login interest.</li>
+<li>`DatabaseTests.test_favorites_round_trip_and_favorite_flags()` - Validates that favorites round trip and favorite flags.</li>
+<li>`DatabaseTests.test_event_writes_do_not_refresh_recommendations()` - Validates that event writes do not refresh recommendations.</li>
+<li>`DatabaseTests.test_favorite_mutations_invalidate_without_refresh()` - Validates that favorite mutations invalidate without refresh.</li>
+<li>`DatabaseTests.test_history_product_entries_include_snapshot()` - Validates that history product entries include snapshot.</li>
+<li>`DatabaseTests.test_related_products_prioritize_relevant_same_category_matches()` - Validates that related products prioritize relevant same category matches.</li>
+<li>`DatabaseTests.test_related_products_for_others_require_real_family_overlap()` - Validates that related products for others require real family overlap.</li>
+<li>`DatabaseTests.test_stored_related_rows_are_revalidated_before_return()` - Validates that stored related rows are revalidated before return.</li>
+<li>`DatabaseTests.test_search_driven_related_results_beat_cached_interest_graph_matches()` - Validates that search driven related results beat cached interest graph matches.</li>
+<li>`DatabaseTests.test_query_expansion_prefers_generated_titles()` - Validates that query expansion prefers generated titles.</li>
+<li>`DatabaseTests.test_category_classification_covers_common_search_families()` - Validates that category classification covers common search families.</li>
+<li>`DatabaseTests.test_book_like_product_stays_out_of_requested_electronics_category()` - Validates that book like product stays out of requested electronics category.</li>
+<li>`DatabaseTests.test_initialize_database_repairs_book_like_electronics_rows()` - Validates that initialize database repairs book like electronics rows.</li>
+<li>`DatabaseTests.test_short_brand_query_does_not_match_substrings()` - Validates that short brand query does not match substrings.</li>
+<li>`DatabaseTests.test_rank_query_allows_strong_text_matches_from_others()` - Validates that rank query allows strong text matches from others.</li>
+<li>`DatabaseTests.test_rank_query_filters_unrelated_candidates_for_blender()` - Validates that rank query filters unrelated candidates for blender.</li>
+</ul>
+<h4>services/scraper-python/tests/test_discovery.py</h4>
+<p>Purpose: Discovery pipeline test suite.</p>
+<p>Contains: Verifies discovery caching, normalization, ranking, and query behavior.</p>
+<ul>
+<li>`DiscoveryTests` - Main class/object for this file.</li>
+<li>`DiscoveryTests.setUp()` - Test helper used by this test module.</li>
+<li>`DiscoveryTests.tearDown()` - Test helper used by this test module.</li>
+<li>`DiscoveryTests._seed_product()` - Test helper used by this test module.</li>
+<li>`DiscoveryTests.test_normalize_result_maps_allowed_provider()` - Validates that normalize result maps allowed provider.</li>
+<li>`DiscoveryTests.test_normalize_result_preserves_unsupported_domain_as_candidate()` - Validates that normalize result preserves unsupported domain as candidate.</li>
+<li>`DiscoveryTests.test_normalize_result_rejects_noise_domain()` - Validates that normalize result rejects noise domain.</li>
+<li>`DiscoveryTests.test_discovery_cache_round_trip()` - Validates that discovery cache round trip.</li>
+<li>`DiscoveryTests.test_normalize_apify_entry_maps_organic_results()` - Validates that normalize apify entry maps organic results.</li>
+<li>`DiscoveryTests.test_apify_token_alias_is_accepted()` - Validates that apify token alias is accepted.</li>
+<li>`DiscoveryTests.test_build_search_seed_queries_uses_cleaned_apify_titles()` - Validates that build search seed queries uses cleaned apify titles.</li>
+<li>`DiscoveryTests.test_build_search_seed_queries_uses_supported_then_extra_domain_titles()` - Validates that build search seed queries uses supported then extra domain titles.</li>
+<li>`DiscoveryTests.test_build_related_seed_queries_prefers_brand_title_then_related_titles()` - Validates that build related seed queries prefers brand title then related titles.</li>
+<li>`DiscoveryTests.test_build_related_family_query_keeps_product_family_terms()` - Validates that build related family query keeps product family terms.</li>
+<li>`DiscoveryTests.test_apify_client_falls_back_to_single_query_requests()` - Validates that apify client falls back to single query requests.</li>
+<li>`DiscoveryTests.test_searxng_client_falls_back_to_single_engine_requests()` - Validates that searxng client falls back to single engine requests.</li>
+<li>`DiscoveryTests.test_search_uses_discovery_results_for_weak_first_page()` - Validates that search uses discovery results for weak first page.</li>
+<li>`DiscoveryTests.test_run_term_search_skips_provider_exceptions()` - Validates that run term search skips provider exceptions.</li>
+<li>`DiscoveryTests.test_backfill_product_galleries_enriches_existing_products()` - Validates that backfill product galleries enriches existing products.</li>
+<li>`DiscoveryTests.test_search_page_one_merges_searxng_after_apify()` - Validates that search page one merges searxng after apify.</li>
+<li>`DiscoveryTests.test_search_page_two_uses_searxng_only_pagination()` - Validates that search page two uses searxng only pagination.</li>
+<li>`DiscoveryTests.test_related_page_two_uses_hybrid_pagination()` - Validates that related page two uses hybrid pagination.</li>
+<li>`DiscoveryTests.test_get_related_returns_hybrid_same_category_results()` - Validates that get related returns hybrid same category results.</li>
+<li>`DiscoveryTests.test_get_related_uses_hybrid_keyword_extraction_for_broad_title_match()` - Validates that get related uses hybrid keyword extraction for broad title match.</li>
+<li>`DiscoveryTests.test_get_detail_populates_related_products_from_hybrid_lookup()` - Validates that get detail populates related products from hybrid lookup.</li>
+<li>`DiscoveryTests.test_related_page_ignores_old_related_cache_rows_when_hybrid_finds_better_match()` - Validates that related page ignores old related cache rows when hybrid finds better match.</li>
+<li>`DiscoveryTests.test_run_term_search_forces_requested_batch_category_for_all_accepted_products()` - Validates that run term search forces requested batch category for all accepted products.</li>
+<li>`DiscoveryTests.test_search_show_more_reuses_active_collection_code_for_appended_results()` - Validates that search show more reuses active collection code for appended results.</li>
+<li>`DiscoveryTests.test_reseed_category_baseline_assigns_collection_code_to_query_batch()` - Validates that reseed category baseline assigns collection code to query batch.</li>
+<li>`DiscoveryTests.test_get_related_prefers_same_collection_results_before_fallback()` - Validates that get related prefers same collection results before fallback.</li>
+<li>`DiscoveryTests.test_search_falls_back_cleanly_when_discovery_fails()` - Validates that search falls back cleanly when discovery fails.</li>
+</ul>
+<h4>services/scraper-python/tests/test_parsers.py</h4>
+<p>Purpose: Parser test suite.</p>
+<p>Contains: Validates retailer HTML parsing using saved fixture pages.</p>
+<ul>
+<li>`ParserTests` - Main class/object for this file.</li>
+<li>`ParserTests.test_amazon_search_parser_extracts_product()` - Validates that amazon search parser extracts product.</li>
+<li>`ParserTests.test_walmart_search_parser_extracts_product()` - Validates that walmart search parser extracts product.</li>
+<li>`ParserTests.test_target_search_parser_extracts_product()` - Validates that target search parser extracts product.</li>
+<li>`ParserTests.test_amazon_detail_parser_collects_dynamic_image_gallery()` - Validates that amazon detail parser collects dynamic image gallery.</li>
+</ul>
+<h3>services/scraper-python/tests/fixtures</h3>
+<p>Captured retailer HTML used by parser tests.</p>
+<h4>services/scraper-python/tests/fixtures/amazon_search.html</h4>
+<p>Purpose: Saved HTML fixture for parser tests.</p>
+<p>Contains: Contains a captured Amazon page used to validate parsing logic.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/tests/fixtures/target_search.html</h4>
+<p>Purpose: Saved HTML fixture for parser tests.</p>
+<p>Contains: Contains a captured Target page used to validate parsing logic.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>services/scraper-python/tests/fixtures/walmart_search.html</h4>
+<p>Purpose: Saved HTML fixture for parser tests.</p>
+<p>Contains: Contains a captured Walmart page used to validate parsing logic.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/enhanced_checkout</h3>
+<p>Files grouped under `stitch/enhanced_checkout`.</p>
+<h4>stitch/enhanced_checkout/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/enhanced_checkout/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/enhanced_home_screen</h3>
+<p>Files grouped under `stitch/enhanced_home_screen`.</p>
+<h4>stitch/enhanced_home_screen/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/enhanced_home_screen/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/enhanced_login</h3>
+<p>Files grouped under `stitch/enhanced_login`.</p>
+<h4>stitch/enhanced_login/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/enhanced_login/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/enhanced_product_detail</h3>
+<p>Files grouped under `stitch/enhanced_product_detail`.</p>
+<h4>stitch/enhanced_product_detail/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/enhanced_product_detail/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/enhanced_product_listing</h3>
+<p>Files grouped under `stitch/enhanced_product_listing`.</p>
+<h4>stitch/enhanced_product_listing/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/enhanced_product_listing/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/enhanced_shopping_cart</h3>
+<p>Files grouped under `stitch/enhanced_shopping_cart`.</p>
+<h4>stitch/enhanced_shopping_cart/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/enhanced_shopping_cart/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/sign_up</h3>
+<p>Files grouped under `stitch/sign_up`.</p>
+<h4>stitch/sign_up/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/sign_up/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch/user_profile</h3>
+<p>Files grouped under `stitch/user_profile`.</p>
+<h4>stitch/user_profile/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch/user_profile/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch_home_screen/aix_store_home_enhanced</h3>
+<p>Files grouped under `stitch_home_screen/aix_store_home_enhanced`.</p>
+<h4>stitch_home_screen/aix_store_home_enhanced/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch_home_screen/aix_store_home_enhanced/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch_home_screen/enhanced_login</h3>
+<p>Files grouped under `stitch_home_screen/enhanced_login`.</p>
+<h4>stitch_home_screen/enhanced_login/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch_home_screen/enhanced_login/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch_home_screen/enhanced_product_detail</h3>
+<p>Files grouped under `stitch_home_screen/enhanced_product_detail`.</p>
+<h4>stitch_home_screen/enhanced_product_detail/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch_home_screen/enhanced_product_detail/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch_home_screen/enhanced_product_listing</h3>
+<p>Files grouped under `stitch_home_screen/enhanced_product_listing`.</p>
+<h4>stitch_home_screen/enhanced_product_listing/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch_home_screen/enhanced_product_listing/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch_home_screen/sign_up</h3>
+<p>Files grouped under `stitch_home_screen/sign_up`.</p>
+<h4>stitch_home_screen/sign_up/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch_home_screen/sign_up/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h3>stitch_home_screen/user_profile</h3>
+<p>Files grouped under `stitch_home_screen/user_profile`.</p>
+<h4>stitch_home_screen/user_profile/code.html</h4>
+<p>Purpose: Static prototype screen export.</p>
+<p>Contains: Contains HTML exported from a design/prototyping workflow for visual reference.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h4>stitch_home_screen/user_profile/screen.png</h4>
+<p>Purpose: Prototype screenshot.</p>
+<p>Contains: Contains a rendered screenshot of the corresponding design concept.</p>
+<p>Functions/classes: This file does not define executable functions or classes; it is a configuration, schema, asset, documentation, or placeholder file.</p>
+<h2>Notes About Services Mentioned in Configuration</h2>
+<ul>
+<li>Supabase: actively used for authentication and Postgres storage.</li>
+<li>Apify: actively used for the live discovery/search expansion path.</li>
+<li>Hugging Face Spaces: used as a hosted runtime/API target for mobile builds and previews.</li>
+<li>Ollama/TinyLlama: optional local AI runtime for query rewrite and category-judge tasks.</li>
+<li>SearXNG: still documented and configured as optional/local infrastructure, but no longer the primary live discovery path.</li>
+<li>Neo4j: environment placeholders exist, but the active tracked code does not currently call Neo4j in production request flows.</li>
+<li>Stripe/Shopify/Google Web Client ID: present as configuration placeholders, not as active integrations in the tracked application flow.</li>
+</ul>
+<h2>How to Read the Code Efficiently</h2>
+<ul>
+<li>Start with `README.md`, then `docs/architecture.md`, then `services/scraper-python/app/main.py`.</li>
+<li>Read `apps/mobile/App.tsx` after that to understand the user-facing flow and screen state transitions.</li>
+<li>Use `services/scraper-python/app/jobs.py` to understand orchestration and `services/scraper-python/app/storage/db.py` to understand the real business rules.</li>
+<li>Read `services/scraper-python/app/providers/*` and `services/scraper-python/app/discovery/*` only after the request flow is clear.</li>
+<li>Use the tests in `services/scraper-python/tests/` as executable examples of expected behavior and edge-case handling.</li>
+</ul>
+</body>
+</html>
