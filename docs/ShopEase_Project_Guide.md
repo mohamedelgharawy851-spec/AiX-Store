@@ -533,7 +533,8 @@ Contains: Boots the Python backend, boots the Node runtime if needed, configures
 
 - `wait()` - Implements wait in the module.
 - `resolveAdbBinary()` - Implements resolve adb binary in the module.
-- `ensureAndroidReversePort()` - Implements ensure android reverse port in the module.
+- `adbReverseTcpPort()` - Runs `adb reverse` for a single TCP port (Metro + catalog runtime on Android).
+- `ensureAndroidUsbPortForwarding()` - Enables USB/emulator port forwarding for Metro and the catalog runtime.
 - `resolveLanHost()` - Implements resolve lan host in the module.
 - `findBundledChromium()` - Implements find bundled chromium in the module.
 - `requestHealth()` - Implements request health in the module.
